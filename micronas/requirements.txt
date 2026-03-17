@@ -1,0 +1,9 @@
+torch
+torchvision
+PySide6
+matplotlib
+pandas
+accelerate
+scikit-learn
+tqdm
+psutil
