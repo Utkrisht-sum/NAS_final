@@ -3,7 +3,7 @@ import threading
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QTextEdit,
-    QSplitter, QProgressBar, QGroupBox, QFormLayout, QFileDialog
+    QSplitter, QProgressBar, QGroupBox, QFormLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PySide6.QtCore import Qt, Signal, QObject
 
@@ -21,6 +21,8 @@ class WorkerSignals(QObject):
     ai_msg = Signal(str)
     nas_progress = Signal(int, float, list)  # gen, fitness, pop_data
     train_progress = Signal(int, float, float, float) # epoch, t_loss, v_loss, v_acc
+    model_comparison = Signal(list) # top models from NAS
+    explainability_msg = Signal(str)
     finished = Signal()
 
 class MainWindow(QMainWindow):
@@ -34,6 +36,8 @@ class MainWindow(QMainWindow):
         self.signals.ai_msg.connect(self.set_ai_thinking)
         self.signals.nas_progress.connect(self.update_nas_chart)
         self.signals.train_progress.connect(self.update_train_chart)
+        self.signals.model_comparison.connect(self.update_model_comparison_table)
+        self.signals.explainability_msg.connect(self.update_explainability)
         self.signals.finished.connect(self.on_finished)
 
         main_widget = QWidget()
@@ -87,6 +91,9 @@ class MainWindow(QMainWindow):
         mid_group.setLayout(mid_layout)
         main_layout.addWidget(mid_group)
 
+        # BOTTOM CONTROLS & DEMOS
+        bottom_controls = QHBoxLayout()
+
         # DEMO PRESETS
         demo_group = QGroupBox("Quick Demos")
         demo_layout = QHBoxLayout()
@@ -98,13 +105,38 @@ class MainWindow(QMainWindow):
         demo_layout.addWidget(btn_demo1)
         demo_layout.addWidget(btn_demo2)
         demo_group.setLayout(demo_layout)
-        main_layout.addWidget(demo_group)
+        bottom_controls.addWidget(demo_group)
+
+        # PREDICTION PREVIEW (Disabled until train finishes)
+        pred_group = QGroupBox("Live Prediction & Metrics")
+        pred_layout = QHBoxLayout()
+        self.btn_predict = QPushButton("Test Final Model")
+        self.btn_predict.setEnabled(False)
+        self.btn_predict.clicked.connect(self.run_live_prediction)
+        self.pred_label = QLabel("Waiting for model...")
+
+        # Explicit Accuracy Labels
+        self.lbl_acc_proxy = QLabel("Best NAS Proxy Accuracy: --%")
+        self.lbl_acc_final = QLabel("Final Accuracy: --%")
+        self.lbl_acc_final.setStyleSheet("font-weight: bold; color: green;")
+
+        pred_layout.addWidget(self.btn_predict)
+        pred_layout.addWidget(self.pred_label)
+        pred_layout.addWidget(self.lbl_acc_proxy)
+        pred_layout.addWidget(self.lbl_acc_final)
+
+        pred_group.setLayout(pred_layout)
+        bottom_controls.addWidget(pred_group)
+
+        main_layout.addLayout(bottom_controls)
 
         # BOTTOM PANEL: Run & Progress
         self.btn_start = QPushButton("🚀 START MICRONAS ENGINE")
         self.btn_start.setStyleSheet("font-weight: bold; font-size: 16px; padding: 10px; background-color: #2e8b57; color: white;")
         self.btn_start.clicked.connect(self.start_pipeline)
         main_layout.addWidget(self.btn_start)
+        self.exported_model = None
+        self.exported_metadata = None
 
         # SPLITTER: Charts & Logs
         splitter = QSplitter(Qt.Horizontal)
@@ -121,9 +153,26 @@ class MainWindow(QMainWindow):
         self.ai_thinking_label.setStyleSheet("color: blue; font-weight: bold;")
         right_layout.addWidget(self.ai_thinking_label)
 
+        # Split right panel into Logs and Model Comparison/Explainability
+        right_splitter = QSplitter(Qt.Vertical)
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
-        right_layout.addWidget(self.log_output)
+        right_splitter.addWidget(self.log_output)
+
+        # Model Comparison Table
+        self.table_comparison = QTableWidget(0, 4)
+        self.table_comparison.setHorizontalHeaderLabels(["Rank", "Config", "Accuracy", "Params"])
+        self.table_comparison.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        right_splitter.addWidget(self.table_comparison)
+
+        # Explainability Box
+        self.explain_output = QTextEdit()
+        self.explain_output.setReadOnly(True)
+        self.explain_output.setPlaceholderText("Final Explainability Report will appear here...")
+        right_splitter.addWidget(self.explain_output)
+
+        right_layout.addWidget(right_splitter)
 
         splitter.addWidget(right_panel)
         main_layout.addWidget(splitter)
@@ -166,6 +215,27 @@ class MainWindow(QMainWindow):
 
     def update_train_chart(self, epoch, t_loss, v_loss, v_acc):
         self.charts_panel.update_train_chart(epoch, t_loss, v_loss)
+        self.lbl_acc_final.setText(f"Final Accuracy: {v_acc:.2f}%")
+
+    def update_model_comparison_table(self, top_models):
+        self.table_comparison.setRowCount(0)
+        for i, m in enumerate(top_models[:5]):  # Show top 5
+            self.table_comparison.insertRow(i)
+            self.table_comparison.setItem(i, 0, QTableWidgetItem(f"#{i+1}"))
+
+            # Formatting the config to be readable
+            conf_str = "MLP " + str(m['config'].get('hidden_layers', [])) if m['config']['type'] == 'mlp' else "CNN"
+            self.table_comparison.setItem(i, 1, QTableWidgetItem(conf_str))
+
+            # "accuracy proxy" shown clearly
+            proxy_acc = f"{m['accuracy_proxy']*100:.2f}% (Proxy)"
+            self.table_comparison.setItem(i, 2, QTableWidgetItem(proxy_acc))
+
+            params = f"{m['params'] / 1000:.1f}K"
+            self.table_comparison.setItem(i, 3, QTableWidgetItem(params))
+
+    def update_explainability(self, report_text):
+        self.explain_output.setMarkdown(report_text)
 
     def start_pipeline(self):
         self.btn_start.setEnabled(False)
@@ -210,15 +280,76 @@ class MainWindow(QMainWindow):
             nas._evaluate_fitness = eval_hook
 
             self.signals.log_msg.emit(f"Running NAS. Pop: {pop}, Gens: {gens}")
+
+            # Monkey patch the nas evolutionary loop directly to get LIVE chart updates
+            original_run_search = nas.run_search
+            def live_run_search(population_size, generations, max_params=1e6):
+                # Similar to original loop but emitting signals live
+                logger = get_logger("NASEngine")
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+
+                # Initialize
+                for _ in range(population_size):
+                    config = nas._sample_mlp_config() if nas.metadata["type"] == "tabular" else nas._sample_cnn_config()
+                    model = nas._build_model(config)
+                    if model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(model) < max_params:
+                        eval_data = nas._evaluate_fitness(model, config, device)
+                        nas.population.append(eval_data)
+
+                # Evolution Loop
+                import random
+                for gen in range(generations):
+                    nas.population = sorted(nas.population, key=lambda x: x["fitness"], reverse=True)
+                    nas.history.append([ind["fitness"] for ind in nas.population])
+
+                    # LIVE EMIT here!
+                    best_fitness_now = nas.population[0]["fitness"]
+                    self.signals.nas_progress.emit(gen+1, best_fitness_now, nas.population)
+
+                    parents = nas.population[:population_size//2]
+                    next_gen = parents.copy()
+
+                    while len(next_gen) < population_size:
+                        parent = random.choice(parents)["config"]
+                        child_config = nas._mutate(parent)
+                        if child_config in nas.failures: continue
+                        child_model = nas._build_model(child_config)
+                        if child_model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(child_model) < max_params:
+                            eval_data = nas._evaluate_fitness(child_model, child_config, device)
+                            next_gen.append(eval_data)
+                    nas.population = next_gen
+
+                nas.population = sorted(nas.population, key=lambda x: x["fitness"], reverse=True)
+                best = nas.population[0]
+                nas.best_model = best["model"]
+                nas.best_config = best["config"]
+                nas._save_memory(best)
+                return nas.best_model, nas.best_config, nas.population
+
+            nas.run_search = live_run_search
             best_model, best_config, final_pop = nas.run_search(population_size=pop, generations=gens)
 
-            # Emitting charts updates manually to simplify thread passing for hackathon
-            for i in range(gens):
-                # Just simulating generations chart updates
-                self.signals.nas_progress.emit(i+1, nas.history[i][0] if len(nas.history) > i else 0, final_pop)
-
             self.signals.log_msg.emit(f"Best Config Found: {best_config}")
-            self.signals.ai_msg.emit(f"NAS Completed. Best Fitness: {nas.best_model}")
+            self.signals.ai_msg.emit(f"NAS Completed. Top Model Found.")
+
+            # Update best proxy label
+            best_proxy = final_pop[0]['accuracy_proxy'] * 100
+            self.lbl_acc_proxy.setText(f"Best NAS Proxy Accuracy: {best_proxy:.2f}%")
+
+            # Emit top models for comparison table
+            self.signals.model_comparison.emit(final_pop)
+
+            # Emit explainability reasoning before training
+            best_stats = final_pop[0]
+            explain_text = f"""## 🧠 MICRONAS Decision Engine
+
+**Why this model was selected:**
+- **Proxy Accuracy**: Highest correlation to perfect score ({best_stats['accuracy_proxy']*100:.2f}%) under constraints.
+- **Compute Efficiency**: Achieves this accuracy with only {best_stats['params'] / 1000:.1f}K parameters.
+- **Hardware Profile**: Perfect memory fit ({best_stats['memory_mb']:.2f}MB vs VRAM limit).
+
+*Executing Full Training to verify architecture...*"""
+            self.signals.explainability_msg.emit(explain_text)
 
             self.signals.ai_msg.emit("Starting Full Training Phase...")
             self.signals.log_msg.emit("Initializing Trainer")
@@ -233,9 +364,24 @@ class MainWindow(QMainWindow):
             self.signals.ai_msg.emit("Exporting Project...")
             exporter = ProjectExporter(best_model, metadata, history)
             exporter.export()
-            self.signals.log_msg.emit("Project exported successfully to 'project_output/'")
 
-            self.signals.ai_msg.emit("Pipeline Completed Successfully!")
+            completion_log = """
+========================================
+🚀 PIPELINE COMPLETED SUCCESSFULLY!
+Output generated in 'project_output/':
+   ├── model.pt
+   ├── predict.py
+   ├── train.py
+   ├── requirements.txt
+   ├── README.md
+   └── EXPLAINABILITY.md
+========================================
+"""
+            self.signals.log_msg.emit(completion_log)
+            self.signals.ai_msg.emit("Ready for Deployment.")
+            self.exported_model = best_model
+            self.exported_metadata = metadata
+
         except Exception as e:
             import traceback
             err = traceback.format_exc()
@@ -246,6 +392,63 @@ class MainWindow(QMainWindow):
 
     def on_finished(self):
         self.btn_start.setEnabled(True)
+        if self.exported_model:
+            self.btn_predict.setEnabled(True)
+            self.pred_label.setText("Ready to test!")
+
+    def run_live_prediction(self):
+        if not self.exported_model or not self.exported_metadata:
+            return
+
+        if self.exported_metadata["type"] == "tabular":
+            path, _ = QFileDialog.getOpenFileName(self, "Select CSV to Predict", "", "CSV Files (*.csv)")
+            if not path: return
+
+            import pandas as pd
+            import torch
+            try:
+                df = pd.read_csv(path)
+                target_col = df.columns[-1]
+                features = df.drop(columns=[target_col])
+                features = features.fillna(0)
+                tensor = torch.tensor(features.values, dtype=torch.float32).to("cpu")
+
+                self.exported_model.to("cpu")
+                self.exported_model.eval()
+                with torch.no_grad():
+                    out = self.exported_model(tensor)
+                    if self.exported_metadata["task"] == "classification":
+                        preds = out.argmax(dim=1)
+                        self.pred_label.setText(f"Predicted Classes: {preds[:5].tolist()}...")
+                    else:
+                        self.pred_label.setText(f"Predictions: {out[:5].view(-1).tolist()}...")
+            except Exception as e:
+                self.pred_label.setText(f"Predict Error: {e}")
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg)")
+            if not path: return
+
+            import torch
+            from PIL import Image
+            from torchvision import transforms
+            try:
+                img = Image.open(path).convert("RGB")
+                if self.exported_metadata["input_shape"][0] == 1:
+                     img = img.convert("L")
+
+                trans = transforms.Compose([
+                    transforms.Resize((self.exported_metadata["input_shape"][1], self.exported_metadata["input_shape"][2])),
+                    transforms.ToTensor()
+                ])
+                tensor = trans(img).unsqueeze(0).to("cpu")
+                self.exported_model.to("cpu")
+                self.exported_model.eval()
+                with torch.no_grad():
+                    out = self.exported_model(tensor)
+                    pred = out.argmax(dim=1).item()
+                    self.pred_label.setText(f"Predicted Class ID: {pred}")
+            except Exception as e:
+                self.pred_label.setText(f"Predict Error: {e}")
 
 def run_app():
     app = QApplication(sys.argv)
