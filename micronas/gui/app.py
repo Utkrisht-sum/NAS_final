@@ -1,5 +1,6 @@
 import sys
 import threading
+import torch
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QTextEdit,
