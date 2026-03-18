@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader, TensorDataset, random_split
 from torchvision import datasets, transforms
+from sklearn.preprocessing import StandardScaler
 import PIL
 from utils.logger import get_logger
 
@@ -66,6 +67,11 @@ class DatasetAnalyzer:
 
             # Convert non-numeric
             features = pd.get_dummies(features).astype(float)
+
+            # Scale features to prevent exploding gradients
+            scaler = StandardScaler()
+            features_scaled = scaler.fit_transform(features)
+            features = pd.DataFrame(features_scaled, columns=features.columns)
 
             # Task inference
             if target.dtype == 'object' or len(target.unique()) < 20:

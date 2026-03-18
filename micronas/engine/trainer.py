@@ -18,7 +18,7 @@ class Trainer:
         self.accelerator = Accelerator(mixed_precision="fp16" if torch.cuda.is_available() else "no")
         logger.info(f"Accelerator device: {self.accelerator.device}, mixed_precision: {self.accelerator.mixed_precision}")
 
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
 
         if self.task == "classification":
             self.criterion = nn.CrossEntropyLoss()
@@ -60,6 +60,10 @@ class Trainer:
 
                     loss = self.criterion(outputs, targets)
                     self.accelerator.backward(loss)
+
+                    # Gradient clipping to prevent exploding loss
+                    self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+
                     self.optimizer.step()
 
                     total_loss += loss.item()

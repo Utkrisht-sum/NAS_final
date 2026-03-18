@@ -23,6 +23,16 @@ class DynamicMLP(nn.Module):
         out_dim = num_classes if task == "classification" else 1
         self.classifier = nn.Linear(in_features, out_dim)
 
+        # Initialize weights
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
     def forward(self, x):
         # Flatten input in case it's 2D+
         x = x.view(x.size(0), -1)
@@ -73,21 +83,13 @@ class DynamicCNN(nn.Module):
                 layers = layers[:-4]
                 break
 
+        # Global Average Pooling replaces delicate spatial tracking and massively reduces params
         self.feature_extractor = nn.Sequential(*layers)
-
-        # Calculate flattened size
-        dummy_input = torch.zeros(1, *input_shape)
-        try:
-            with torch.no_grad():
-                dummy_output = self.feature_extractor(dummy_input)
-            flattened_size = dummy_output.view(1, -1).size(1)
-        except Exception as e:
-            logger.error(f"Failed to calculate flattened size: {e}")
-            flattened_size = 1 # Fallback, though we shouldn't hit this due to repair
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
 
         # Fully connected layers
         fc_layers_list = []
-        in_features = flattened_size
+        in_features = in_channels  # Output channels from last conv after pooling to 1x1
         for out_features in fc_layers:
             fc_layers_list.append(nn.Linear(in_features, out_features))
             fc_layers_list.append(nn.ReLU())
@@ -99,8 +101,25 @@ class DynamicCNN(nn.Module):
         out_dim = num_classes if task == "classification" else 1
         self.classifier = nn.Linear(in_features, out_dim)
 
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
     def forward(self, x):
         x = self.feature_extractor(x)
+        x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
         x = self.fc_block(x)
         x = self.classifier(x)
