@@ -37,16 +37,16 @@ class NASEngine:
         }
 
     def _sample_cnn_config(self):
-        depth = random.randint(1, 4)
+        depth = random.randint(2, 5) # Updated depth requirements 2-5
         conv_layers = []
         for _ in range(depth):
             conv_layers.append({
-                "channels": random.choice([16, 32, 64, 128]),
+                "channels": random.choice([32, 64, 128, 256]), # Updated channel choices
                 "kernel_size": random.choice([3, 5])
             })
 
         fc_depth = random.randint(1, 2)
-        fc_layers = [random.choice([32, 64, 128]) for _ in range(fc_depth)]
+        fc_layers = [random.choice([64, 128, 256]) for _ in range(fc_depth)]
 
         return {
             "type": "cnn",
@@ -81,13 +81,13 @@ class NASEngine:
             return None
 
     def _evaluate_fitness(self, model, config, device="cpu"):
-        # F(A) = α*accuracy − β*params − γ*latency − δ*memory
+        # Hybrid F(A) = α*(proxy_score + real_val_accuracy)/2 − β*params − γ*latency − δ*memory
 
-        # 1. Zero-Cost Proxy + Stage 1 Proxy Training
+        # 1. Zero-Cost Proxy + Stage 1 Real Training (Hybrid Accuracy Evaluation)
         zero_cost_score = get_zero_cost_score(model, self.train_loader, device=device)
+        zero_cost_normalized = min(100, zero_cost_score / 100.0)
 
-        # Perform 1 epoch of proxy training (Stage 1 of the two-stage requirement)
-        # We use a mini-trainer approach to do a super fast 5-batch training to get real proxy accuracy.
+        # Real Validation Training (Stage 1 of two-stage optimization)
         proxy_val_acc = 0.0
         try:
             from engine.trainer import Trainer
@@ -95,31 +95,32 @@ class NASEngine:
             old_level = logging.getLogger("Trainer").level
             logging.getLogger("Trainer").setLevel(logging.CRITICAL) # suppress logs
 
-            # Temporary trainer limited to evaluating few batches
             model.to(device)
             proxy_trainer = Trainer(model, self.train_loader, self.val_loader, task=self.metadata["task"])
 
-            # Quick 1 epoch proxy train (will just do a few batches to be fast)
+            # Perform a full miniature training loop (1-2 mini epochs)
             proxy_trainer.model.train()
-            for batch_idx, (inputs, targets) in enumerate(proxy_trainer.train_loader):
-                if batch_idx > 5: break
-                proxy_trainer.optimizer.zero_grad()
-                outputs = proxy_trainer.model(inputs)
-                if self.metadata["task"] == "regression": targets = targets.view(-1, 1).float()
-                loss = proxy_trainer.criterion(outputs, targets)
-                proxy_trainer.accelerator.backward(loss)
-                if proxy_trainer.accelerator.sync_gradients:
-                    proxy_trainer.accelerator.clip_grad_norm_(proxy_trainer.model.parameters(), 1.0)
-                proxy_trainer.optimizer.step()
+            for epoch in range(2): # Mini epochs
+                for batch_idx, (inputs, targets) in enumerate(proxy_trainer.train_loader):
+                    if batch_idx > 10: break # Train on at least 10 batches to get a decent signal
+                    proxy_trainer.optimizer.zero_grad()
+                    outputs = proxy_trainer.model(inputs)
+                    if self.metadata["task"] == "regression": targets = targets.view(-1, 1).float()
+                    loss = proxy_trainer.criterion(outputs, targets)
+                    proxy_trainer.accelerator.backward(loss)
+                    if proxy_trainer.accelerator.sync_gradients:
+                        proxy_trainer.accelerator.clip_grad_norm_(proxy_trainer.model.parameters(), 1.0)
+                    proxy_trainer.optimizer.step()
 
             _, proxy_val_acc = proxy_trainer.evaluate()
             logging.getLogger("Trainer").setLevel(old_level)
             model.to("cpu")
         except Exception as e:
             logger.warning(f"Proxy training failed: {e}")
-            proxy_val_acc = min(100, zero_cost_score / 100.0) # Fallback to zero-cost normalize
+            proxy_val_acc = zero_cost_normalized # Fallback
 
-        accuracy_proxy = max(min(100, zero_cost_score / 100.0) * 0.1, proxy_val_acc) # Mix heuristics and proxy train
+        # Real hybrid score heavily weighted towards real training accuracy
+        accuracy_proxy = (zero_cost_normalized * 0.1) + (proxy_val_acc * 0.9)
 
         # 2. Params
         params = count_parameters(model)

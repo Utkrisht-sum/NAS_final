@@ -47,7 +47,8 @@ class DynamicCNN(nn.Module):
         self.task = task
         self.input_shape = input_shape  # e.g., (3, 32, 32)
 
-        # Conv layers: list of dicts [{'channels': 32, 'kernel_size': 3, 'stride': 1, 'padding': 1}]
+        # Robust Block-Based Design: Conv -> BN -> ReLU -> Conv -> BN -> ReLU -> MaxPool
+        # conv_layers: list of dicts [{'channels': 32, 'kernel_size': 3}]
         layers = []
         in_channels = input_shape[0]
 
@@ -56,35 +57,49 @@ class DynamicCNN(nn.Module):
         for idx, config in enumerate(conv_layers):
             out_channels = config['channels']
             k = config['kernel_size']
-            s = config.get('stride', 1)
-            p = config.get('padding', k // 2)
+            p = k // 2
 
-            # Dimension check and repair
+            # Block Dimension Safety Check
             if current_h < k or current_w < k:
-                logger.warning(f"Spatial dimension ({current_h}x{current_w}) too small for kernel {k} at layer {idx}. Repairing to kernel=1.")
+                logger.warning(f"Spatial dimension ({current_h}x{current_w}) too small for block {idx}. Repairing to kernel=1.")
                 k = 1
                 p = 0
 
-            layers.append(nn.Conv2d(in_channels, out_channels, k, stride=s, padding=p))
+            # Conv 1
+            layers.append(nn.Conv2d(in_channels, out_channels, k, stride=1, padding=p))
             layers.append(nn.BatchNorm2d(out_channels))
-            layers.append(nn.ReLU())
-            layers.append(nn.MaxPool2d(2, 2))  # Halves dimensions
+            layers.append(nn.ReLU(inplace=True))
+
+            # Conv 2
+            layers.append(nn.Conv2d(out_channels, out_channels, k, stride=1, padding=p))
+            layers.append(nn.BatchNorm2d(out_channels))
+            layers.append(nn.ReLU(inplace=True))
+
+            # Pool
+            layers.append(nn.MaxPool2d(2, 2))
 
             in_channels = out_channels
-            current_h = (current_h - k + 2*p) // s + 1
-            current_w = (current_w - k + 2*p) // s + 1
-
             current_h = current_h // 2
             current_w = current_w // 2
 
-            # Stop adding layers if dimensions become 0 or negative
+            # Stop adding blocks if dimensions collapse
             if current_h <= 0 or current_w <= 0:
-                logger.warning("Spatial dimensions collapsed to <= 0. Terminating conv block early.")
-                # We pop the last maxpool, relu, batchnorm, conv to prevent crash
-                layers = layers[:-4]
+                logger.warning("Spatial dimensions collapsed. Terminating conv blocks early.")
+                layers = layers[:-7] # Remove the last complete block to prevent crash
+                in_channels = layers[-6].out_channels if len(layers) >= 6 else input_shape[0] # Fallback in_channels
                 break
 
         # Global Average Pooling replaces delicate spatial tracking and massively reduces params
+        if not layers:
+            # Strong Default Architecture Fallback if everything failed
+            logger.warning("All NAS blocks failed or invalid, falling back to strong default CNN architecture.")
+            layers = [
+                nn.Conv2d(input_shape[0], 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+                nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+                nn.MaxPool2d(2, 2)
+            ]
+            in_channels = 64
+
         self.feature_extractor = nn.Sequential(*layers)
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
 

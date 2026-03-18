@@ -357,9 +357,15 @@ class MainWindow(QMainWindow):
 
             # Use prompt multipliers to dynamically increase epochs
             final_epochs = epochs * nas.weights.get("epoch_multiplier", 1)
+            if final_epochs < 15 and "accurate" in prompt.lower(): final_epochs = 15 # Enforce 15-25 min for highly accurate
+
             self.signals.log_msg.emit(f"Calculated Final Epochs: {final_epochs} (due to prompt requirements)")
 
-            trainer = Trainer(best_model, train_loader, val_loader, task=metadata["task"])
+            # CRITICAL: Rebuild the model completely to reinitialize weights from scratch
+            self.signals.ai_msg.emit("Reinitializing Model Weights From Scratch...")
+            fresh_model = nas._build_model(best_config)
+
+            trainer = Trainer(fresh_model, train_loader, val_loader, task=metadata["task"])
 
             def train_cb(epoch, t_loss, v_loss, v_acc):
                 self.signals.train_progress.emit(epoch, t_loss, v_loss, v_acc)

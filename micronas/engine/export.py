@@ -22,6 +22,35 @@ class ProjectExporter:
         self._export_train_script()
         self._export_readme()
         self._export_explainability()
+        self._export_confusion_matrix()
+
+    def _export_confusion_matrix(self):
+        if not hasattr(self.history, 'get') or 'preds' not in self.history:
+            return
+
+        try:
+            from sklearn.metrics import confusion_matrix
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+
+            y_true = self.history['targets']
+            y_pred = self.history['preds']
+
+            if not y_true or not y_pred: return
+
+            cm = confusion_matrix(y_true, y_pred)
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.title('Confusion Matrix - Final Validation')
+            plt.xlabel('Predicted')
+            plt.ylabel('Actual')
+
+            out_path = os.path.join(self.output_dir, "confusion_matrix.png")
+            plt.savefig(out_path)
+            plt.close()
+            logger.info(f"Confusion matrix saved to {out_path}")
+        except Exception as e:
+            logger.warning(f"Could not generate confusion matrix: {e}")
 
     def _export_model(self):
         model_path = os.path.join(self.output_dir, "model.pt")
