@@ -352,15 +352,20 @@ class MainWindow(QMainWindow):
 *Executing Full Training to verify architecture...*"""
             self.signals.explainability_msg.emit(explain_text)
 
-            self.signals.ai_msg.emit("Starting Full Training Phase...")
+            self.signals.ai_msg.emit("Starting Full Training Phase (Stage 2)...")
             self.signals.log_msg.emit("Initializing Trainer")
+
+            # Use prompt multipliers to dynamically increase epochs
+            final_epochs = epochs * nas.weights.get("epoch_multiplier", 1)
+            self.signals.log_msg.emit(f"Calculated Final Epochs: {final_epochs} (due to prompt requirements)")
+
             trainer = Trainer(best_model, train_loader, val_loader, task=metadata["task"])
 
             def train_cb(epoch, t_loss, v_loss, v_acc):
                 self.signals.train_progress.emit(epoch, t_loss, v_loss, v_acc)
-                self.signals.log_msg.emit(f"Epoch {epoch} | TL: {t_loss:.3f} | VL: {v_loss:.3f} | Metric: {v_acc:.2f}")
+                self.signals.log_msg.emit(f"Epoch {epoch}/{final_epochs} | TL: {t_loss:.3f} | VL: {v_loss:.3f} | Metric: {v_acc:.2f}")
 
-            history = trainer.train(epochs=epochs, callback=train_cb)
+            history = trainer.train(epochs=final_epochs, callback=train_cb)
 
             self.signals.ai_msg.emit("Exporting Project...")
             exporter = ProjectExporter(best_model, metadata, history)
@@ -419,10 +424,11 @@ Output generated in 'project_output/':
                 with torch.no_grad():
                     out = self.exported_model(tensor)
                     if self.exported_metadata["task"] == "classification":
-                        preds = out.argmax(dim=1)
-                        self.pred_label.setText(f"Predicted Classes: {preds[:5].tolist()}...")
+                        probs = torch.nn.functional.softmax(out, dim=1)
+                        conf, preds = probs.max(dim=1)
+                        self.pred_label.setText(f"Pred: {preds[:3].tolist()}... | Conf: {conf[:3].mean().item()*100:.1f}%")
                     else:
-                        self.pred_label.setText(f"Predictions: {out[:5].view(-1).tolist()}...")
+                        self.pred_label.setText(f"Predictions: {out[:3].view(-1).tolist()}...")
             except Exception as e:
                 self.pred_label.setText(f"Predict Error: {e}")
         else:
@@ -446,8 +452,9 @@ Output generated in 'project_output/':
                 self.exported_model.eval()
                 with torch.no_grad():
                     out = self.exported_model(tensor)
-                    pred = out.argmax(dim=1).item()
-                    self.pred_label.setText(f"Predicted Class ID: {pred}")
+                    probs = torch.nn.functional.softmax(out, dim=1)
+                    conf, pred = probs.max(dim=1)
+                    self.pred_label.setText(f"Class: {pred.item()} | Confidence: {conf.item()*100:.1f}%")
             except Exception as e:
                 self.pred_label.setText(f"Predict Error: {e}")
 

@@ -5,7 +5,7 @@ from utils.logger import get_logger
 logger = get_logger("ModelBuilder")
 
 class DynamicMLP(nn.Module):
-    def __init__(self, input_size, hidden_layers, num_classes, task="classification"):
+    def __init__(self, input_size, hidden_layers, num_classes, task="classification", dropout_rate=0.2):
         super(DynamicMLP, self).__init__()
         self.task = task
         layers = []
@@ -13,8 +13,9 @@ class DynamicMLP(nn.Module):
         in_features = input_size
         for out_features in hidden_layers:
             layers.append(nn.Linear(in_features, out_features))
+            layers.append(nn.BatchNorm1d(out_features))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.2))  # Basic regularization
+            layers.append(nn.Dropout(dropout_rate))  # Dynamic regularization
             in_features = out_features
 
         self.feature_extractor = nn.Sequential(*layers)
@@ -41,7 +42,7 @@ class DynamicMLP(nn.Module):
         return x
 
 class DynamicCNN(nn.Module):
-    def __init__(self, input_shape, conv_layers, fc_layers, num_classes, task="classification"):
+    def __init__(self, input_shape, conv_layers, fc_layers, num_classes, task="classification", dropout_rate=0.3):
         super(DynamicCNN, self).__init__()
         self.task = task
         self.input_shape = input_shape  # e.g., (3, 32, 32)
@@ -92,8 +93,9 @@ class DynamicCNN(nn.Module):
         in_features = in_channels  # Output channels from last conv after pooling to 1x1
         for out_features in fc_layers:
             fc_layers_list.append(nn.Linear(in_features, out_features))
+            fc_layers_list.append(nn.BatchNorm1d(out_features))
             fc_layers_list.append(nn.ReLU())
-            fc_layers_list.append(nn.Dropout(0.3))
+            fc_layers_list.append(nn.Dropout(dropout_rate))
             in_features = out_features
 
         self.fc_block = nn.Sequential(*fc_layers_list)
@@ -109,7 +111,7 @@ class DynamicCNN(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):

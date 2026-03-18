@@ -56,12 +56,14 @@ class NASEngine:
 
     def _build_model(self, config):
         try:
+            dropout_rate = self.weights.get("dropout_rate", 0.2)
             if config["type"] == "mlp":
                 model = DynamicMLP(
                     input_size=self.metadata["input_shape"][0],
                     hidden_layers=config["hidden_layers"],
                     num_classes=self.metadata["num_classes"],
-                    task=self.metadata["task"]
+                    task=self.metadata["task"],
+                    dropout_rate=dropout_rate
                 )
             else:
                 model = DynamicCNN(
@@ -69,7 +71,8 @@ class NASEngine:
                     conv_layers=config["conv_layers"],
                     fc_layers=config["fc_layers"],
                     num_classes=self.metadata["num_classes"],
-                    task=self.metadata["task"]
+                    task=self.metadata["task"],
+                    dropout_rate=dropout_rate
                 )
             return model
         except Exception as e:
@@ -80,10 +83,43 @@ class NASEngine:
     def _evaluate_fitness(self, model, config, device="cpu"):
         # F(A) = α*accuracy − β*params − γ*latency − δ*memory
 
-        # 1. Zero-Cost Proxy (Estimates Accuracy roughly for Hackathon Speed)
+        # 1. Zero-Cost Proxy + Stage 1 Proxy Training
         zero_cost_score = get_zero_cost_score(model, self.train_loader, device=device)
-        # Normalize zero_cost_score roughly
-        accuracy_proxy = min(100, zero_cost_score / 100.0)
+
+        # Perform 1 epoch of proxy training (Stage 1 of the two-stage requirement)
+        # We use a mini-trainer approach to do a super fast 5-batch training to get real proxy accuracy.
+        proxy_val_acc = 0.0
+        try:
+            from engine.trainer import Trainer
+            import logging
+            old_level = logging.getLogger("Trainer").level
+            logging.getLogger("Trainer").setLevel(logging.CRITICAL) # suppress logs
+
+            # Temporary trainer limited to evaluating few batches
+            model.to(device)
+            proxy_trainer = Trainer(model, self.train_loader, self.val_loader, task=self.metadata["task"])
+
+            # Quick 1 epoch proxy train (will just do a few batches to be fast)
+            proxy_trainer.model.train()
+            for batch_idx, (inputs, targets) in enumerate(proxy_trainer.train_loader):
+                if batch_idx > 5: break
+                proxy_trainer.optimizer.zero_grad()
+                outputs = proxy_trainer.model(inputs)
+                if self.metadata["task"] == "regression": targets = targets.view(-1, 1).float()
+                loss = proxy_trainer.criterion(outputs, targets)
+                proxy_trainer.accelerator.backward(loss)
+                if proxy_trainer.accelerator.sync_gradients:
+                    proxy_trainer.accelerator.clip_grad_norm_(proxy_trainer.model.parameters(), 1.0)
+                proxy_trainer.optimizer.step()
+
+            _, proxy_val_acc = proxy_trainer.evaluate()
+            logging.getLogger("Trainer").setLevel(old_level)
+            model.to("cpu")
+        except Exception as e:
+            logger.warning(f"Proxy training failed: {e}")
+            proxy_val_acc = min(100, zero_cost_score / 100.0) # Fallback to zero-cost normalize
+
+        accuracy_proxy = max(min(100, zero_cost_score / 100.0) * 0.1, proxy_val_acc) # Mix heuristics and proxy train
 
         # 2. Params
         params = count_parameters(model)
@@ -105,6 +141,8 @@ class NASEngine:
         beta = self.weights["beta"]
         gamma = self.weights["gamma"]
         delta = self.weights["delta"]
+
+        # When optimizing for accuracy, we care about raw percentage accuracy, latency/params are penalties.
 
         fitness = (alpha * accuracy_proxy) - (beta * (params / 1e5)) - (gamma * latency) - (delta * memory_mb)
 
