@@ -1,8 +1,50 @@
 import torch
 import torch.nn as nn
 from utils.logger import get_logger
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from xgboost import XGBClassifier, XGBRegressor
 
 logger = get_logger("ModelBuilder")
+
+class TreeModelWrapper:
+    """Wrapper to make Scikit/XGB models fit into the PyTorch trainer API conceptually."""
+    def __init__(self, model_type, num_classes, task="classification", **kwargs):
+        self.task = task
+        self.model_type = model_type
+        self.kwargs = kwargs
+
+        if task == "classification":
+            if model_type == "rf":
+                self.model = RandomForestClassifier(**kwargs)
+            else:
+                self.model = XGBClassifier(**kwargs)
+        else:
+            if model_type == "rf":
+                self.model = RandomForestRegressor(**kwargs)
+            else:
+                self.model = XGBRegressor(**kwargs)
+
+    def train(self): pass
+    def eval(self): pass
+    def parameters(self): return []
+    def to(self, device): return self
+    def __call__(self, x):
+        # We handle this manually in trainer for sklearn predict vs predict_proba
+        pass
+
+class DynamicLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, task="classification", dropout_rate=0.2):
+        super(DynamicLSTM, self).__init__()
+        self.task = task
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_size, num_classes if task == "classification" else 1)
+
+    def forward(self, x):
+        # x is (batch, seq_len, features)
+        out, _ = self.lstm(x)
+        # Take the last time step
+        out = out[:, -1, :]
+        return self.fc(out)
 
 class DynamicMLP(nn.Module):
     def __init__(self, input_size, hidden_layers, num_classes, task="classification", dropout_rate=0.2):
@@ -143,9 +185,11 @@ class DynamicCNN(nn.Module):
         return x
 
 def count_parameters(model):
+    if isinstance(model, TreeModelWrapper): return model.kwargs.get('n_estimators', 100) * 100 # Proxy param count for trees
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def estimate_memory_mb(model, input_shape, batch_size=32):
+    if isinstance(model, TreeModelWrapper): return 50.0 # Heuristic 50MB for Tree models
     # Very rough estimate for forward pass memory
     params_mem = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024)
 

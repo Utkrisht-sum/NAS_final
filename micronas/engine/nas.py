@@ -4,7 +4,7 @@ import json
 import os
 import torch
 from utils.logger import get_logger
-from engine.models import DynamicMLP, DynamicCNN, count_parameters, estimate_memory_mb
+from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, TreeModelWrapper, count_parameters, estimate_memory_mb
 from engine.prompt_parser import PromptParser
 
 logger = get_logger("NASEngine")
@@ -27,9 +27,22 @@ class NASEngine:
         self.best_model = None
         self.best_config = None
 
-    def _sample_mlp_config(self):
-        # Diverse Tabular Architectures
+    def _sample_tabular_config(self):
+        # Diverse Tabular Architectures including Tree Models
         templates = [
+            {
+                "type": "rf",
+                "name": "Random Forest",
+                "n_estimators": random.choice([50, 100, 200]),
+                "max_depth": random.choice([10, 20, None])
+            },
+            {
+                "type": "xgb",
+                "name": "XGBoost",
+                "n_estimators": random.choice([100, 200, 300]),
+                "learning_rate": random.choice([0.01, 0.1, 0.2]),
+                "max_depth": random.choice([3, 5, 7])
+            },
             {
                 "type": "mlp",
                 "name": "Shallow MLP",
@@ -77,6 +90,16 @@ class NASEngine:
         ]
         return random.choice(templates)
 
+    def _sample_sequence_config(self):
+        depth = random.randint(1, 3)
+        hidden = random.choice([32, 64, 128])
+        return {
+            "type": "lstm",
+            "name": f"LSTM (Layers: {depth}, Hidden: {hidden})",
+            "hidden_size": hidden,
+            "num_layers": depth
+        }
+
     def _build_model(self, config):
         try:
             dropout_rate = self.weights.get("dropout_rate", 0.2)
@@ -88,7 +111,7 @@ class NASEngine:
                     task=self.metadata["task"],
                     dropout_rate=dropout_rate
                 )
-            else:
+            elif config["type"] == "cnn":
                 model = DynamicCNN(
                     input_shape=self.metadata["input_shape"],
                     conv_layers=config["conv_layers"],
@@ -96,6 +119,24 @@ class NASEngine:
                     num_classes=self.metadata["num_classes"],
                     task=self.metadata["task"],
                     dropout_rate=dropout_rate
+                )
+            elif config["type"] == "lstm":
+                model = DynamicLSTM(
+                    input_size=self.metadata["input_shape"][1] if len(self.metadata["input_shape"]) > 1 else 1,
+                    hidden_size=config["hidden_size"],
+                    num_layers=config["num_layers"],
+                    num_classes=self.metadata["num_classes"],
+                    task=self.metadata["task"],
+                    dropout_rate=dropout_rate
+                )
+            elif config["type"] in ["rf", "xgb"]:
+                # Tree models are instantiated via wrapper
+                model_params = {k:v for k,v in config.items() if k not in ["type", "name"]}
+                model = TreeModelWrapper(
+                    model_type=config["type"],
+                    num_classes=self.metadata["num_classes"],
+                    task=self.metadata["task"],
+                    **model_params
                 )
             return model
         except Exception as e:
@@ -171,7 +212,13 @@ class NASEngine:
 
         # Initialize Population
         for _ in range(population_size):
-            config = self._sample_mlp_config() if self.metadata["type"] == "tabular" else self._sample_cnn_config()
+            if self.metadata["type"] == "tabular":
+                config = self._sample_tabular_config()
+            elif self.metadata["type"] == "image":
+                config = self._sample_cnn_config()
+            else:
+                config = self._sample_sequence_config()
+
             model = self._build_model(config)
 
             if model and count_parameters(model) < max_params:
@@ -181,7 +228,12 @@ class NASEngine:
         # Handle case where all models exceeded max_params (Fallback)
         if not self.population:
             logger.warning("No models fit within the max_params constraint. Using default fallback.")
-            config = self._sample_mlp_config() if self.metadata["type"] == "tabular" else self._sample_cnn_config()
+            if self.metadata["type"] == "tabular":
+                config = self._sample_tabular_config()
+            elif self.metadata["type"] == "image":
+                config = self._sample_cnn_config()
+            else:
+                config = self._sample_sequence_config()
             model = self._build_model(config)
             self.population.append(self._evaluate_fitness(model, config, device))
 
@@ -260,7 +312,7 @@ class NASEngine:
                 else:
                     idx = random.randint(0, len(new_config["hidden_layers"]) - 1)
                     new_config["hidden_layers"][idx] = random.choice([16, 32, 64, 128])
-        else:
+        elif new_config["type"] == "cnn":
             if is_overfitting and len(new_config["conv_layers"]) > 2:
                 logger.info("Overfitting detected. Mutating to a shallower CNN.")
                 new_config["conv_layers"].pop()
@@ -276,6 +328,22 @@ class NASEngine:
                 else:
                     idx = random.randint(0, len(new_config["conv_layers"]) - 1)
                     new_config["conv_layers"][idx]["channels"] = random.choice([16, 32, 64])
+        elif new_config["type"] in ["rf", "xgb"]:
+            # Trees: simply change hyperparameters slightly
+            if is_overfitting:
+                new_config["max_depth"] = max(3, (new_config.get("max_depth") or 10) - 2)
+            elif is_underfitting:
+                new_config["n_estimators"] += 50
+            else:
+                new_config["n_estimators"] += random.choice([-50, 0, 50])
+                new_config["n_estimators"] = max(10, new_config["n_estimators"])
+        elif new_config["type"] == "lstm":
+            if is_overfitting and new_config["num_layers"] > 1:
+                new_config["num_layers"] -= 1
+            elif is_underfitting:
+                new_config["hidden_size"] = min(256, new_config["hidden_size"] * 2)
+            else:
+                new_config["hidden_size"] = random.choice([32, 64, 128])
 
         return new_config
 

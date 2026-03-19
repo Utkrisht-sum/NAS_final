@@ -53,9 +53,15 @@ class ProjectExporter:
             logger.warning(f"Could not generate confusion matrix: {e}")
 
     def _export_model(self):
-        model_path = os.path.join(self.output_dir, "model.pt")
-        torch.save(self.model.state_dict(), model_path)
-        logger.info(f"Model weights saved to {model_path}")
+        from engine.models import TreeModelWrapper
+        if isinstance(self.model, TreeModelWrapper):
+            import joblib
+            model_path = os.path.join(self.output_dir, "model.pkl")
+            joblib.dump(self.model.model, model_path)
+        else:
+            model_path = os.path.join(self.output_dir, "model.pt")
+            torch.save(self.model.state_dict(), model_path)
+        logger.info(f"Model saved to {model_path}")
 
     def _export_requirements(self):
         req_content = "torch\ntorchvision\npandas\npillow\naccelerate\n"

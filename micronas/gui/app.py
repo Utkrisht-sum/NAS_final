@@ -318,7 +318,13 @@ class MainWindow(QMainWindow):
                 # Initialize
                 self.signals.ai_msg.emit("Initializing Candidate Population...")
                 for idx in range(population_size):
-                    config = nas._sample_mlp_config() if nas.metadata["type"] == "tabular" else nas._sample_cnn_config()
+                    if nas.metadata["type"] == "tabular":
+                        config = nas._sample_tabular_config()
+                    elif nas.metadata["type"] == "image":
+                        config = nas._sample_cnn_config()
+                    else:
+                        config = nas._sample_sequence_config()
+
                     model = nas._build_model(config)
                     if model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(model) < max_params:
                         eval_data = evaluate_with_live_ui(model, config, device, candidate_idx=idx+1, total_candidates=population_size)
@@ -327,7 +333,12 @@ class MainWindow(QMainWindow):
                 # Handle case where all models exceeded max_params (Fallback)
                 if not nas.population:
                     logger.warning("No models fit within the max_params constraint. Using default fallback.")
-                    config = nas._sample_mlp_config() if nas.metadata["type"] == "tabular" else nas._sample_cnn_config()
+                    if nas.metadata["type"] == "tabular":
+                        config = nas._sample_tabular_config()
+                    elif nas.metadata["type"] == "image":
+                        config = nas._sample_cnn_config()
+                    else:
+                        config = nas._sample_sequence_config()
                     model = nas._build_model(config)
                     eval_data = evaluate_with_live_ui(model, config, device, candidate_idx=1, total_candidates=1)
                     nas.population.append(eval_data)
@@ -464,16 +475,31 @@ Output generated in 'project_output/':
                 features = features.fillna(0)
                 tensor = torch.tensor(features.values, dtype=torch.float32).to("cpu")
 
-                self.exported_model.to("cpu")
-                self.exported_model.eval()
-                with torch.no_grad():
-                    out = self.exported_model(tensor)
+                from engine.models import TreeModelWrapper
+                if isinstance(self.exported_model, TreeModelWrapper):
+                    # Scikit-learn / XGB prediction
+                    X = tensor.numpy()
+                    preds = self.exported_model.model.predict(X)
                     if self.exported_metadata["task"] == "classification":
-                        probs = torch.nn.functional.softmax(out, dim=1)
-                        conf, preds = probs.max(dim=1)
-                        self.pred_label.setText(f"Pred: {preds[:3].tolist()}... | Conf: {conf[:3].mean().item()*100:.1f}%")
+                        if hasattr(self.exported_model.model, "predict_proba"):
+                            probs = self.exported_model.model.predict_proba(X)
+                            conf = probs.max(axis=1).mean() * 100
+                            self.pred_label.setText(f"Pred: {preds[:3].tolist()}... | Conf: {conf:.1f}%")
+                        else:
+                            self.pred_label.setText(f"Pred: {preds[:3].tolist()}...")
                     else:
-                        self.pred_label.setText(f"Predictions: {out[:3].view(-1).tolist()}...")
+                        self.pred_label.setText(f"Predictions: {preds[:3].tolist()}...")
+                else:
+                    self.exported_model.to("cpu")
+                    self.exported_model.eval()
+                    with torch.no_grad():
+                        out = self.exported_model(tensor)
+                        if self.exported_metadata["task"] == "classification":
+                            probs = torch.nn.functional.softmax(out, dim=1)
+                            conf, preds = probs.max(dim=1)
+                            self.pred_label.setText(f"Pred: {preds[:3].tolist()}... | Conf: {conf[:3].mean().item()*100:.1f}%")
+                        else:
+                            self.pred_label.setText(f"Predictions: {out[:3].view(-1).tolist()}...")
             except Exception as e:
                 self.pred_label.setText(f"Predict Error: {e}")
         else:
