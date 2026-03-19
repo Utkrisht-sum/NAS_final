@@ -46,6 +46,56 @@ class DynamicLSTM(nn.Module):
         out = out[:, -1, :]
         return self.fc(out)
 
+class DynamicGRU(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, task="classification", dropout_rate=0.2):
+        super(DynamicGRU, self).__init__()
+        self.task = task
+        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_size, num_classes if task == "classification" else 1)
+
+    def forward(self, x):
+        out, _ = self.gru(x)
+        out = out[:, -1, :]
+        return self.fc(out)
+
+class TemporalCNN(nn.Module):
+    def __init__(self, input_size, channels, kernel_size, num_classes, task="classification", dropout_rate=0.2):
+        super(TemporalCNN, self).__init__()
+        self.task = task
+        # input is (batch, seq_len, features) -> Conv1d needs (batch, channels, seq_len)
+        self.conv = nn.Conv1d(input_size, channels, kernel_size, padding=kernel_size//2)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.pool = nn.AdaptiveMaxPool1d(1)
+        self.fc = nn.Linear(channels, num_classes if task == "classification" else 1)
+
+    def forward(self, x):
+        x = x.transpose(1, 2) # Switch to (batch, features, seq_len)
+        x = self.conv(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.pool(x).squeeze(-1)
+        return self.fc(x)
+
+class EnsembleWrapper(nn.Module):
+    """Bonus feature: Evaluates multiple base models and averages their predictions."""
+    def __init__(self, models):
+        super(EnsembleWrapper, self).__init__()
+        # Ensure we only ensemble identical task types (e.g. PyTorch models together)
+        self.models = nn.ModuleList([m for m in models if isinstance(m, nn.Module)])
+        if self.models:
+            self.task = getattr(self.models[0], 'task', 'classification')
+        else:
+            self.task = 'classification'
+
+    def forward(self, x):
+        outputs = []
+        for model in self.models:
+            outputs.append(model(x))
+        # Average the predictions
+        stacked = torch.stack(outputs, dim=0)
+        return torch.mean(stacked, dim=0)
+
 class DynamicMLP(nn.Module):
     def __init__(self, input_size, hidden_layers, num_classes, task="classification", dropout_rate=0.2):
         super(DynamicMLP, self).__init__()

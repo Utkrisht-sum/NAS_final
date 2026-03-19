@@ -4,7 +4,7 @@ import json
 import os
 import torch
 from utils.logger import get_logger
-from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, TreeModelWrapper, count_parameters, estimate_memory_mb
+from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, DynamicGRU, TemporalCNN, TreeModelWrapper, EnsembleWrapper, count_parameters, estimate_memory_mb
 from engine.prompt_parser import PromptParser
 
 logger = get_logger("NASEngine")
@@ -29,6 +29,9 @@ class NASEngine:
 
     def _sample_tabular_config(self):
         # Diverse Tabular Architectures including Tree Models
+        num_samples = self.metadata.get("num_samples", 1000)
+
+        # Base templates
         templates = [
             {
                 "type": "rf",
@@ -47,58 +50,89 @@ class NASEngine:
                 "type": "mlp",
                 "name": "Shallow MLP",
                 "hidden_layers": [32]
-            },
-            {
-                "type": "mlp",
-                "name": "Wide MLP",
-                "hidden_layers": [128, 128]
-            },
-            {
+            }
+        ]
+
+        if num_samples > 500:
+            templates.extend([
+                {
+                    "type": "mlp",
+                    "name": "Wide MLP",
+                    "hidden_layers": [128, 128]
+                },
+                {
+                    "type": "mlp",
+                    "name": "Balanced MLP",
+                    "hidden_layers": [128, 64, 32]
+                }
+            ])
+
+        if num_samples > 5000:
+            templates.append({
                 "type": "mlp",
                 "name": "Deep MLP",
                 "hidden_layers": [64, 64, 128, 128]
-            },
-            {
-                "type": "mlp",
-                "name": "Balanced MLP",
-                "hidden_layers": [128, 64, 32]
-            }
-        ]
+            })
+            templates[0]["n_estimators"] = random.choice([300, 500]) # Deeper RF
+            templates[1]["n_estimators"] = random.choice([300, 500]) # Deeper XGB
+
         return random.choice(templates)
 
     def _sample_cnn_config(self):
         # Using Provided Predefined CNN Templates (Small, Medium, Deep) instead of random layers
+        num_samples = self.metadata.get("num_samples", 1000)
+
         templates = [
             {
                 "type": "cnn",
                 "name": "Small CNN",
                 "conv_layers": [{"channels": 32, "kernel_size": 3}, {"channels": 64, "kernel_size": 3}],
                 "fc_layers": [128]
-            },
-            {
+            }
+        ]
+
+        if num_samples > 1000:
+            templates.append({
                 "type": "cnn",
                 "name": "Medium CNN",
                 "conv_layers": [{"channels": 32, "kernel_size": 3}, {"channels": 64, "kernel_size": 3}, {"channels": 128, "kernel_size": 3}],
                 "fc_layers": [256]
-            },
-            {
+            })
+
+        if num_samples > 10000:
+            templates.append({
                 "type": "cnn",
                 "name": "Deep CNN",
                 "conv_layers": [{"channels": 64, "kernel_size": 3}, {"channels": 128, "kernel_size": 3}, {"channels": 256, "kernel_size": 3}, {"channels": 256, "kernel_size": 3}],
                 "fc_layers": [512, 128]
-            }
-        ]
+            })
+
         return random.choice(templates)
 
     def _sample_sequence_config(self):
         depth = random.randint(1, 3)
         hidden = random.choice([32, 64, 128])
-        return {
-            "type": "lstm",
-            "name": f"LSTM (Layers: {depth}, Hidden: {hidden})",
-            "hidden_size": hidden,
-            "num_layers": depth
-        }
+        templates = [
+            {
+                "type": "lstm",
+                "name": f"LSTM (Layers: {depth}, Hidden: {hidden})",
+                "hidden_size": hidden,
+                "num_layers": depth
+            },
+            {
+                "type": "gru",
+                "name": f"GRU (Layers: {depth}, Hidden: {hidden})",
+                "hidden_size": hidden,
+                "num_layers": depth
+            },
+            {
+                "type": "tcnn",
+                "name": f"Temporal CNN (Channels: {hidden})",
+                "channels": hidden,
+                "kernel_size": random.choice([3, 5])
+            }
+        ]
+        return random.choice(templates)
 
     def _build_model(self, config):
         try:
@@ -107,6 +141,24 @@ class NASEngine:
                 model = DynamicMLP(
                     input_size=self.metadata["input_shape"][0],
                     hidden_layers=config["hidden_layers"],
+                    num_classes=self.metadata["num_classes"],
+                    task=self.metadata["task"],
+                    dropout_rate=dropout_rate
+                )
+            elif config["type"] == "gru":
+                model = DynamicGRU(
+                    input_size=self.metadata["input_shape"][1] if len(self.metadata["input_shape"]) > 1 else 1,
+                    hidden_size=config["hidden_size"],
+                    num_layers=config["num_layers"],
+                    num_classes=self.metadata["num_classes"],
+                    task=self.metadata["task"],
+                    dropout_rate=dropout_rate
+                )
+            elif config["type"] == "tcnn":
+                model = TemporalCNN(
+                    input_size=self.metadata["input_shape"][1] if len(self.metadata["input_shape"]) > 1 else 1,
+                    channels=config["channels"],
+                    kernel_size=config["kernel_size"],
                     num_classes=self.metadata["num_classes"],
                     task=self.metadata["task"],
                     dropout_rate=dropout_rate
@@ -138,6 +190,10 @@ class NASEngine:
                     task=self.metadata["task"],
                     **model_params
                 )
+            elif config["type"] == "ensemble":
+                models = [self._build_model(sub_cfg) for sub_cfg in config["sub_configs"]]
+                model = EnsembleWrapper(models)
+                model.task = self.metadata["task"]
             return model
         except Exception as e:
             logger.error(f"Failed to build model from config {config}: {e}")
@@ -174,6 +230,7 @@ class NASEngine:
             train_loss = float('inf')
 
         # For hackathon rule compliance, fitness is purely based on validation accuracy
+        # VALIDATION-FIRST LOGIC: Always prioritize val_acc over train_acc or zero-cost guesses
         fitness = val_acc
 
         # Measure params, latency and memory for analytics only
@@ -286,15 +343,24 @@ class NASEngine:
         # Analyze performance if available to do targeted mutation
         is_overfitting = False
         is_underfitting = False
+
         if parent_stats:
             val_acc = parent_stats.get("accuracy_proxy", 0) * 100.0
             train_loss = parent_stats.get("train_loss", float('inf'))
-            # Heuristic: if train loss is very low but validation is poor, it's overfitting
-            if train_loss < 0.1 and val_acc < 60:
+
+            # Explicit rule: train_acc >> val_acc (We estimate train_acc via low loss for regression/categorical)
+            if train_loss < 0.2 and val_acc < 65:
                 is_overfitting = True
-            # If both are poor, it's underfitting
-            elif train_loss > 1.5 and val_acc < 60:
+                logger.info(f"Overfitting detected (Train Loss: {train_loss:.2f}, Val Acc: {val_acc:.2f}%). Adapting config.")
+                # Adaptive Dropout: Increase dropout dynamically to combat memorization
+                self.weights["dropout_rate"] = min(0.5, self.weights.get("dropout_rate", 0.2) + 0.1)
+
+            # Explicit rule: train_acc and val_acc both low
+            elif train_loss > 1.2 and val_acc < 60:
                 is_underfitting = True
+                logger.info(f"Underfitting detected (Train Loss: {train_loss:.2f}, Val Acc: {val_acc:.2f}%). Adapting config.")
+                # Train longer: Increment the epoch multiplier automatically
+                self.weights["epoch_multiplier"] = self.weights.get("epoch_multiplier", 1) + 1
 
         if new_config["type"] == "mlp":
             if is_overfitting and len(new_config["hidden_layers"]) > 1:
@@ -337,13 +403,20 @@ class NASEngine:
             else:
                 new_config["n_estimators"] += random.choice([-50, 0, 50])
                 new_config["n_estimators"] = max(10, new_config["n_estimators"])
-        elif new_config["type"] == "lstm":
+        elif new_config["type"] in ["lstm", "gru"]:
             if is_overfitting and new_config["num_layers"] > 1:
                 new_config["num_layers"] -= 1
             elif is_underfitting:
                 new_config["hidden_size"] = min(256, new_config["hidden_size"] * 2)
             else:
                 new_config["hidden_size"] = random.choice([32, 64, 128])
+        elif new_config["type"] == "tcnn":
+            if is_overfitting:
+                new_config["channels"] = max(16, new_config["channels"] // 2)
+            elif is_underfitting:
+                new_config["channels"] = min(256, new_config["channels"] * 2)
+            else:
+                new_config["kernel_size"] = random.choice([3, 5, 7])
 
         return new_config
 

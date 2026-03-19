@@ -146,7 +146,9 @@ class DatasetAnalyzer:
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
 
+        # Mandatory Train/Validation Split
         train_dataset, val_dataset = random_split(self.dataset, [train_size, val_size])
 
-        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        # Data Handling Rules: Shuffle training data, DO NOT shuffle validation data
+        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True if train_size > batch_size else False)
         self.val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
