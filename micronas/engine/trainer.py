@@ -26,7 +26,7 @@ class Trainer:
             self.criterion = nn.MSELoss()
 
         # Add Learning Rate Scheduler for Convergence
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=2)
 
         # Prepare components for accelerate
         self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler = self.accelerator.prepare(

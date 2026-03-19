@@ -1,1 +1,0 @@
-{"depth": 5, "hidden_units": [128, 128, 256, 64, 64], "activation": "tanh", "dropout": 0.17}

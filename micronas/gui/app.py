@@ -355,9 +355,12 @@ class MainWindow(QMainWindow):
             self.signals.ai_msg.emit("Starting Full Training Phase (Stage 2)...")
             self.signals.log_msg.emit("Initializing Trainer")
 
-            # Use prompt multipliers to dynamically increase epochs
+            # Enforce 15-20 minimum final epochs for Image data and high accuracy
             final_epochs = epochs * nas.weights.get("epoch_multiplier", 1)
-            if final_epochs < 15 and "accurate" in prompt.lower(): final_epochs = 15 # Enforce 15-25 min for highly accurate
+            if final_epochs < 15:
+                final_epochs = 15
+            elif final_epochs > 20 and metadata["type"] == "image":
+                final_epochs = 20 # Cap to prevent extremely long hackathon demo wait times
 
             self.signals.log_msg.emit(f"Calculated Final Epochs: {final_epochs} (due to prompt requirements)")
 

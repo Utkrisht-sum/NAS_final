@@ -1,8 +1,0 @@
-{
-    "depth": 1,
-    "hidden_units": [
-        16
-    ],
-    "activation": "tanh",
-    "dropout": 0.12
-}

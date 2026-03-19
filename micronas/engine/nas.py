@@ -5,7 +5,6 @@ import os
 import torch
 from utils.logger import get_logger
 from engine.models import DynamicMLP, DynamicCNN, count_parameters, estimate_memory_mb
-from metrics.zero_cost import get_zero_cost_score
 from engine.prompt_parser import PromptParser
 
 logger = get_logger("NASEngine")
@@ -37,22 +36,28 @@ class NASEngine:
         }
 
     def _sample_cnn_config(self):
-        depth = random.randint(2, 5) # Updated depth requirements 2-5
-        conv_layers = []
-        for _ in range(depth):
-            conv_layers.append({
-                "channels": random.choice([32, 64, 128, 256]), # Updated channel choices
-                "kernel_size": random.choice([3, 5])
-            })
-
-        fc_depth = random.randint(1, 2)
-        fc_layers = [random.choice([64, 128, 256]) for _ in range(fc_depth)]
-
-        return {
-            "type": "cnn",
-            "conv_layers": conv_layers,
-            "fc_layers": fc_layers
-        }
+        # Using Provided Predefined CNN Templates (Small, Medium, Deep) instead of random layers
+        templates = [
+            {
+                "type": "cnn",
+                "name": "Small CNN",
+                "conv_layers": [{"channels": 32, "kernel_size": 3}, {"channels": 64, "kernel_size": 3}],
+                "fc_layers": [128]
+            },
+            {
+                "type": "cnn",
+                "name": "Medium CNN",
+                "conv_layers": [{"channels": 32, "kernel_size": 3}, {"channels": 64, "kernel_size": 3}, {"channels": 128, "kernel_size": 3}],
+                "fc_layers": [256]
+            },
+            {
+                "type": "cnn",
+                "name": "Deep CNN",
+                "conv_layers": [{"channels": 64, "kernel_size": 3}, {"channels": 128, "kernel_size": 3}, {"channels": 256, "kernel_size": 3}, {"channels": 256, "kernel_size": 3}],
+                "fc_layers": [512, 128]
+            }
+        ]
+        return random.choice(templates)
 
     def _build_model(self, config):
         try:
@@ -81,14 +86,10 @@ class NASEngine:
             return None
 
     def _evaluate_fitness(self, model, config, device="cpu"):
-        # Hybrid F(A) = α*(proxy_score + real_val_accuracy)/2 − β*params − γ*latency − δ*memory
+        # F(A) = validation_accuracy (Strict Training-Based Fitness)
 
-        # 1. Zero-Cost Proxy + Stage 1 Real Training (Hybrid Accuracy Evaluation)
-        zero_cost_score = get_zero_cost_score(model, self.train_loader, device=device)
-        zero_cost_normalized = min(100, zero_cost_score / 100.0)
-
-        # Real Validation Training (Stage 1 of two-stage optimization)
-        proxy_val_acc = 0.0
+        # Real Validation Training (Stage 1)
+        val_acc = 0.0
         try:
             from engine.trainer import Trainer
             import logging
@@ -96,60 +97,43 @@ class NASEngine:
             logging.getLogger("Trainer").setLevel(logging.CRITICAL) # suppress logs
 
             model.to(device)
+            # We enforce 2 epochs of training for the evaluation on the full subset
             proxy_trainer = Trainer(model, self.train_loader, self.val_loader, task=self.metadata["task"])
 
-            # Perform a full miniature training loop (1-2 mini epochs)
-            proxy_trainer.model.train()
-            for epoch in range(2): # Mini epochs
-                for batch_idx, (inputs, targets) in enumerate(proxy_trainer.train_loader):
-                    if batch_idx > 10: break # Train on at least 10 batches to get a decent signal
-                    proxy_trainer.optimizer.zero_grad()
-                    outputs = proxy_trainer.model(inputs)
-                    if self.metadata["task"] == "regression": targets = targets.view(-1, 1).float()
-                    loss = proxy_trainer.criterion(outputs, targets)
-                    proxy_trainer.accelerator.backward(loss)
-                    if proxy_trainer.accelerator.sync_gradients:
-                        proxy_trainer.accelerator.clip_grad_norm_(proxy_trainer.model.parameters(), 1.0)
-                    proxy_trainer.optimizer.step()
+            # Using standard training loop
+            history = proxy_trainer.train(epochs=2, early_stopping_patience=10)
 
-            _, proxy_val_acc = proxy_trainer.evaluate()
+            val_acc = history['val_acc'][-1] if len(history['val_acc']) > 0 else 0.0
+
             logging.getLogger("Trainer").setLevel(old_level)
             model.to("cpu")
         except Exception as e:
-            logger.warning(f"Proxy training failed: {e}")
-            proxy_val_acc = zero_cost_normalized # Fallback
+            logger.warning(f"Training evaluation failed: {e}")
+            val_acc = 0.0
 
-        # Real hybrid score heavily weighted towards real training accuracy
-        accuracy_proxy = (zero_cost_normalized * 0.1) + (proxy_val_acc * 0.9)
+        # For hackathon rule compliance, fitness is purely based on validation accuracy
+        fitness = val_acc
 
-        # 2. Params
+        # Measure params, latency and memory for analytics only
         params = count_parameters(model)
 
-        # 3. Latency (Estimate with forward pass)
-        model.to(device)
-        dummy_input = next(iter(self.train_loader))[0][:4].to(device)
-        start = time.time()
-        with torch.no_grad():
-            model(dummy_input)
-        latency = (time.time() - start) * 1000 # ms
-        model.to("cpu") # move back to save GPU memory during NAS
+        try:
+            model.to(device)
+            dummy_input = next(iter(self.train_loader))[0][:4].to(device)
+            start = time.time()
+            with torch.no_grad():
+                model(dummy_input)
+            latency = (time.time() - start) * 1000 # ms
+        except:
+            latency = 999.0
+        finally:
+            model.to("cpu")
 
-        # 4. Memory
         memory_mb = estimate_memory_mb(model, self.metadata["input_shape"])
-
-        # Fitness Calculation
-        alpha = self.weights["alpha"]
-        beta = self.weights["beta"]
-        gamma = self.weights["gamma"]
-        delta = self.weights["delta"]
-
-        # When optimizing for accuracy, we care about raw percentage accuracy, latency/params are penalties.
-
-        fitness = (alpha * accuracy_proxy) - (beta * (params / 1e5)) - (gamma * latency) - (delta * memory_mb)
 
         return {
             "fitness": fitness,
-            "accuracy_proxy": accuracy_proxy,
+            "accuracy_proxy": val_acc / 100.0, # Kept for UI compatibility (e.g. 0.95)
             "params": params,
             "latency_ms": latency,
             "memory_mb": memory_mb,
@@ -172,6 +156,13 @@ class NASEngine:
                 eval_data = self._evaluate_fitness(model, config, device)
                 self.population.append(eval_data)
 
+        # Handle case where all models exceeded max_params (Fallback)
+        if not self.population:
+            logger.warning("No models fit within the max_params constraint. Using default fallback.")
+            config = self._sample_mlp_config() if self.metadata["type"] == "tabular" else self._sample_cnn_config()
+            model = self._build_model(config)
+            self.population.append(self._evaluate_fitness(model, config, device))
+
         # Evolutionary Loop
         for gen in range(generations):
             logger.info(f"--- Generation {gen+1}/{generations} ---")
@@ -181,7 +172,7 @@ class NASEngine:
             self.history.append([ind["fitness"] for ind in self.population])
 
             # Keep top 50%
-            parents = self.population[:population_size//2]
+            parents = self.population[:max(1, population_size//2)]
 
             # Mutate to fill population
             next_gen = parents.copy()

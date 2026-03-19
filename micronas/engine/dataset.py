@@ -97,7 +97,7 @@ class DatasetAnalyzer:
 
     def _load_image_folder(self):
         transform = transforms.Compose([
-            transforms.Resize((64, 64)), # Resize for memory safety in hackathon
+            transforms.Resize((32, 32)), # Resize for compatibility with deeper CIFAR-like CNN templates
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
