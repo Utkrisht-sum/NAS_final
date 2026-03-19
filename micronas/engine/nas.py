@@ -28,12 +28,30 @@ class NASEngine:
         self.best_config = None
 
     def _sample_mlp_config(self):
-        depth = random.randint(1, 4)
-        hidden_layers = [random.choice([16, 32, 64, 128, 256]) for _ in range(depth)]
-        return {
-            "type": "mlp",
-            "hidden_layers": hidden_layers
-        }
+        # Diverse Tabular Architectures
+        templates = [
+            {
+                "type": "mlp",
+                "name": "Shallow MLP",
+                "hidden_layers": [32]
+            },
+            {
+                "type": "mlp",
+                "name": "Wide MLP",
+                "hidden_layers": [128, 128]
+            },
+            {
+                "type": "mlp",
+                "name": "Deep MLP",
+                "hidden_layers": [64, 64, 128, 128]
+            },
+            {
+                "type": "mlp",
+                "name": "Balanced MLP",
+                "hidden_layers": [128, 64, 32]
+            }
+        ]
+        return random.choice(templates)
 
     def _sample_cnn_config(self):
         # Using Provided Predefined CNN Templates (Small, Medium, Deep) instead of random layers
@@ -104,12 +122,15 @@ class NASEngine:
             history = proxy_trainer.train(epochs=2, early_stopping_patience=10)
 
             val_acc = history['val_acc'][-1] if len(history['val_acc']) > 0 else 0.0
+            # Track train_acc to detect over/under fitting
+            train_loss = history['train_loss'][-1] if len(history['train_loss']) > 0 else float('inf')
 
             logging.getLogger("Trainer").setLevel(old_level)
             model.to("cpu")
         except Exception as e:
             logger.warning(f"Training evaluation failed: {e}")
             val_acc = 0.0
+            train_loss = float('inf')
 
         # For hackathon rule compliance, fitness is purely based on validation accuracy
         fitness = val_acc
@@ -134,6 +155,7 @@ class NASEngine:
         return {
             "fitness": fitness,
             "accuracy_proxy": val_acc / 100.0, # Kept for UI compatibility (e.g. 0.95)
+            "train_loss": train_loss, # Used to detect overfitting
             "params": params,
             "latency_ms": latency,
             "memory_mb": memory_mb,
@@ -205,27 +227,55 @@ class NASEngine:
 
         return self.best_model, self.best_config, self.population
 
-    def _mutate(self, config):
+    def _mutate(self, config, parent_stats=None):
         import copy
         new_config = copy.deepcopy(config)
 
+        # Analyze performance if available to do targeted mutation
+        is_overfitting = False
+        is_underfitting = False
+        if parent_stats:
+            val_acc = parent_stats.get("accuracy_proxy", 0) * 100.0
+            train_loss = parent_stats.get("train_loss", float('inf'))
+            # Heuristic: if train loss is very low but validation is poor, it's overfitting
+            if train_loss < 0.1 and val_acc < 60:
+                is_overfitting = True
+            # If both are poor, it's underfitting
+            elif train_loss > 1.5 and val_acc < 60:
+                is_underfitting = True
+
         if new_config["type"] == "mlp":
-            # Add or remove a layer, or change units
-            if random.random() < 0.3 and len(new_config["hidden_layers"]) < 5:
-                new_config["hidden_layers"].append(random.choice([16, 32, 64]))
-            elif random.random() < 0.3 and len(new_config["hidden_layers"]) > 1:
+            if is_overfitting and len(new_config["hidden_layers"]) > 1:
+                logger.info("Overfitting detected. Mutating to a smaller MLP.")
                 new_config["hidden_layers"].pop()
+            elif is_underfitting and len(new_config["hidden_layers"]) < 5:
+                logger.info("Underfitting detected. Mutating to a deeper MLP.")
+                new_config["hidden_layers"].append(random.choice([64, 128, 256]))
             else:
-                idx = random.randint(0, len(new_config["hidden_layers"]) - 1)
-                new_config["hidden_layers"][idx] = random.choice([16, 32, 64, 128])
+                # Random mutation
+                if random.random() < 0.3 and len(new_config["hidden_layers"]) < 5:
+                    new_config["hidden_layers"].append(random.choice([16, 32, 64]))
+                elif random.random() < 0.3 and len(new_config["hidden_layers"]) > 1:
+                    new_config["hidden_layers"].pop()
+                else:
+                    idx = random.randint(0, len(new_config["hidden_layers"]) - 1)
+                    new_config["hidden_layers"][idx] = random.choice([16, 32, 64, 128])
         else:
-            if random.random() < 0.3 and len(new_config["conv_layers"]) < 5:
-                new_config["conv_layers"].append({"channels": random.choice([16,32]), "kernel_size": 3})
-            elif random.random() < 0.3 and len(new_config["conv_layers"]) > 1:
+            if is_overfitting and len(new_config["conv_layers"]) > 2:
+                logger.info("Overfitting detected. Mutating to a shallower CNN.")
                 new_config["conv_layers"].pop()
+            elif is_underfitting and len(new_config["conv_layers"]) < 5:
+                logger.info("Underfitting detected. Mutating to a deeper CNN.")
+                new_config["conv_layers"].append({"channels": random.choice([64, 128]), "kernel_size": 3})
             else:
-                idx = random.randint(0, len(new_config["conv_layers"]) - 1)
-                new_config["conv_layers"][idx]["channels"] = random.choice([16, 32, 64])
+                # Random mutation
+                if random.random() < 0.3 and len(new_config["conv_layers"]) < 5:
+                    new_config["conv_layers"].append({"channels": random.choice([16,32]), "kernel_size": 3})
+                elif random.random() < 0.3 and len(new_config["conv_layers"]) > 2: # Keep at least 2 for block
+                    new_config["conv_layers"].pop()
+                else:
+                    idx = random.randint(0, len(new_config["conv_layers"]) - 1)
+                    new_config["conv_layers"][idx]["channels"] = random.choice([16, 32, 64])
 
         return new_config
 

@@ -348,8 +348,8 @@ class MainWindow(QMainWindow):
                     next_gen = parents.copy()
 
                     while len(next_gen) < population_size:
-                        parent = random.choice(parents)["config"]
-                        child_config = nas._mutate(parent)
+                        parent = random.choice(parents)
+                        child_config = nas._mutate(parent["config"], parent_stats=parent)
                         if child_config in nas.failures: continue
                         child_model = nas._build_model(child_config)
                         if child_model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(child_model) < max_params:

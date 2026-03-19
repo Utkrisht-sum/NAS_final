@@ -96,8 +96,11 @@ class DatasetAnalyzer:
             raise e
 
     def _load_image_folder(self):
+        # Apply heavy data augmentation to combat overfitting
         transform = transforms.Compose([
             transforms.Resize((32, 32)), # Resize for compatibility with deeper CIFAR-like CNN templates
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
@@ -109,10 +112,19 @@ class DatasetAnalyzer:
         self.metadata["num_samples"] = len(self.dataset)
 
     def _load_torchvision(self, name):
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)) if name == "mnist" else transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
+        if name == "mnist":
+            transform = transforms.Compose([
+                transforms.RandomRotation(10), # Slight rotation for robustness
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,))
+            ])
+        else:
+            transform = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(32, padding=4), # Standard CIFAR augmentation
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
 
         root = "./data"
         os.makedirs(root, exist_ok=True)
