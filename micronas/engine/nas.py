@@ -348,17 +348,20 @@ class NASEngine:
             val_acc = parent_stats.get("accuracy_proxy", 0) * 100.0
             train_loss = parent_stats.get("train_loss", float('inf'))
 
-            # Explicit rule: train_acc >> val_acc (We estimate train_acc via low loss for regression/categorical)
-            if train_loss < 0.2 and val_acc < 65:
+            # Explicit rule: train_acc >> val_acc
+            # We estimate train_acc via an exponential heuristic from train_loss.
+            train_acc_est = min(99.0, (1.0 / (train_loss + 0.01)) * 10.0 + val_acc)
+
+            if (train_acc_est - val_acc) > 10.0:
                 is_overfitting = True
-                logger.info(f"Overfitting detected (Train Loss: {train_loss:.2f}, Val Acc: {val_acc:.2f}%). Adapting config.")
+                logger.info(f"Overfitting detected (Train Acc: {train_acc_est:.2f}%, Val Acc: {val_acc:.2f}%). Adapting config.")
                 # Adaptive Dropout: Increase dropout dynamically to combat memorization
                 self.weights["dropout_rate"] = min(0.5, self.weights.get("dropout_rate", 0.2) + 0.1)
 
             # Explicit rule: train_acc and val_acc both low
-            elif train_loss > 1.2 and val_acc < 60:
+            elif train_acc_est < 60 and val_acc < 60:
                 is_underfitting = True
-                logger.info(f"Underfitting detected (Train Loss: {train_loss:.2f}, Val Acc: {val_acc:.2f}%). Adapting config.")
+                logger.info(f"Underfitting detected (Train Acc: {train_acc_est:.2f}%, Val Acc: {val_acc:.2f}%). Adapting config.")
                 # Train longer: Increment the epoch multiplier automatically
                 self.weights["epoch_multiplier"] = self.weights.get("epoch_multiplier", 1) + 1
 
