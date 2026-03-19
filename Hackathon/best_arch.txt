@@ -1,0 +1,1 @@
+Architecture(depth=1, layers=[16], activation=tanh, dropout=0.12)
