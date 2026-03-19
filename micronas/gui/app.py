@@ -292,9 +292,8 @@ class MainWindow(QMainWindow):
                 self.signals.log_msg.emit(f"Starting 2-epoch proxy training for candidate {candidate_idx}: {conf_name}")
 
                 # Monkey patch the internal trainer used by _evaluate_fitness just for this run to emit live signals
-                import micronas.engine.nas
-                import micronas.engine.trainer
-                original_trainer_train = micronas.engine.trainer.Trainer.train
+                import engine.trainer
+                original_trainer_train = engine.trainer.Trainer.train
 
                 def live_proxy_train(trainer_self, epochs=2, early_stopping_patience=10, callback=None):
                     def proxy_cb(epoch, t_loss, v_loss, v_acc):
@@ -302,11 +301,11 @@ class MainWindow(QMainWindow):
                         self.signals.log_msg.emit(f"[NAS Search] {conf_name} - Epoch {epoch}/{epochs} | TL: {t_loss:.3f} | VL: {v_loss:.3f} | Acc: {v_acc:.2f}%")
                     return original_trainer_train(trainer_self, epochs=epochs, early_stopping_patience=early_stopping_patience, callback=proxy_cb)
 
-                micronas.engine.trainer.Trainer.train = live_proxy_train
+                engine.trainer.Trainer.train = live_proxy_train
                 try:
                     res = nas._evaluate_fitness(model, config, device)
                 finally:
-                    micronas.engine.trainer.Trainer.train = original_trainer_train
+                    engine.trainer.Trainer.train = original_trainer_train
 
                 self.signals.ai_msg.emit(f"Candidate {candidate_idx} scored {res['fitness']:.2f}% accuracy.")
                 return res
