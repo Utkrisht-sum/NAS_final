@@ -330,9 +330,13 @@ class MainWindow(QMainWindow):
                         eval_data = evaluate_with_live_ui(model, config, device, candidate_idx=idx+1, total_candidates=population_size)
                         nas.population.append(eval_data)
 
-                # Handle case where all models exceeded max_params (Fallback)
-                if not nas.population:
-                    logger.warning("No models fit within the max_params constraint. Using default fallback.")
+                # Filter out failed evaluations
+                nas.population = [p for p in nas.population if p["fitness"] > -1]
+
+                # Handle case where all models exceeded max_params or crashed (Fallback)
+                if len(nas.population) == 0:
+                    self.signals.ai_msg.emit("All initial candidates failed. Injecting failsafe model...")
+                    logger.warning("No models fit or all crashed. Using default fallback.")
                     if nas.metadata["type"] == "tabular":
                         config = nas._sample_tabular_config()
                     elif nas.metadata["type"] == "image":
@@ -448,7 +452,7 @@ class MainWindow(QMainWindow):
                 self.signals.train_progress.emit(epoch, t_loss, v_loss, v_acc)
                 self.signals.log_msg.emit(f"Epoch {epoch}/{final_epochs} | TL: {t_loss:.3f} | VL: {v_loss:.3f} | Metric: {v_acc:.2f}")
 
-            history = trainer.train(epochs=final_epochs, callback=train_cb)
+            history = trainer.train(epochs=final_epochs, callback=train_cb, early_stopping_patience=3)
 
             self.signals.ai_msg.emit("Exporting Project...")
             exporter = ProjectExporter(best_model, metadata, history)
@@ -463,7 +467,8 @@ Output generated in 'project_output/':
    ├── train.py
    ├── requirements.txt
    ├── README.md
-   └── EXPLAINABILITY.md
+   ├── EXPLAINABILITY.md
+   └── results.json
 ========================================
 """
             self.signals.log_msg.emit(completion_log)

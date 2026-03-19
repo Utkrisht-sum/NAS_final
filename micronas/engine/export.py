@@ -23,6 +23,19 @@ class ProjectExporter:
         self._export_readme()
         self._export_explainability()
         self._export_confusion_matrix()
+        self._export_results()
+
+    def _export_results(self):
+        try:
+            results = {
+                "val_acc": self.history.get("val_acc", [])[-1] if self.history.get("val_acc") else 0.0,
+                "train_loss": self.history.get("train_loss", [])[-1] if self.history.get("train_loss") else 0.0,
+                "best_val_loss": self.history.get("best_val_loss", 0.0)
+            }
+            with open(os.path.join(self.output_dir, "results.json"), "w") as f:
+                json.dump(results, f, indent=4)
+        except Exception as e:
+            logger.warning(f"Could not export results.json: {e}")
 
     def _export_confusion_matrix(self):
         if not hasattr(self.history, 'get') or 'preds' not in self.history:

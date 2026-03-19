@@ -202,57 +202,56 @@ class NASEngine:
 
     def _evaluate_fitness(self, model, config, device="cpu"):
         # F(A) = validation_accuracy (Strict Training-Based Fitness)
+        # CRITICAL FAILSAFE: If a model crashes during training (e.g. memory, shape), it gets fitness = -1 so NAS naturally filters it out.
 
-        # Real Validation Training (Stage 1)
         val_acc = 0.0
+        train_loss = float('inf')
+        latency = 999.0
+        params = count_parameters(model)
+        memory_mb = estimate_memory_mb(model, self.metadata["input_shape"])
+
         try:
             from engine.trainer import Trainer
             import logging
             old_level = logging.getLogger("Trainer").level
             logging.getLogger("Trainer").setLevel(logging.CRITICAL) # suppress logs
 
-            model.to(device)
-            # We enforce 2 epochs of training for the evaluation on the full subset
-            proxy_trainer = Trainer(model, self.train_loader, self.val_loader, task=self.metadata["task"])
-
-            # Using standard training loop
-            history = proxy_trainer.train(epochs=2, early_stopping_patience=10)
-
-            val_acc = history['val_acc'][-1] if len(history['val_acc']) > 0 else 0.0
-            # Track train_acc to detect over/under fitting
-            train_loss = history['train_loss'][-1] if len(history['train_loss']) > 0 else float('inf')
-
-            logging.getLogger("Trainer").setLevel(old_level)
-            model.to("cpu")
-        except Exception as e:
-            logger.warning(f"Training evaluation failed: {e}")
-            val_acc = 0.0
-            train_loss = float('inf')
-
-        # For hackathon rule compliance, fitness is purely based on validation accuracy
-        # VALIDATION-FIRST LOGIC: Always prioritize val_acc over train_acc or zero-cost guesses
-        fitness = val_acc
-
-        # Measure params, latency and memory for analytics only
-        params = count_parameters(model)
-
-        try:
+            # 1. Latency (Estimate with forward pass first to ensure model is structurally valid)
             model.to(device)
             dummy_input = next(iter(self.train_loader))[0][:4].to(device)
             start = time.time()
             with torch.no_grad():
                 model(dummy_input)
             latency = (time.time() - start) * 1000 # ms
-        except:
-            latency = 999.0
-        finally:
-            model.to("cpu")
 
-        memory_mb = estimate_memory_mb(model, self.metadata["input_shape"])
+            # 2. Real Validation Training (Stage 1)
+            # We enforce exactly 2 epochs of training for the proxy evaluation.
+            proxy_trainer = Trainer(model, self.train_loader, self.val_loader, task=self.metadata["task"])
+
+            # Using standard training loop
+            history = proxy_trainer.train(epochs=2, early_stopping_patience=2)
+
+            val_acc = history['val_acc'][-1] if len(history['val_acc']) > 0 else 0.0
+            # Track train_acc to detect over/under fitting
+            train_loss = history['train_loss'][-1] if len(history['train_loss']) > 0 else float('inf')
+
+        except Exception as e:
+            logger.warning(f"Training evaluation failed for {config.get('name', 'Model')}: {e}")
+            val_acc = -1.0 # Guarantee rejection by Evolutionary Sort
+            train_loss = float('inf')
+        finally:
+            try:
+                logging.getLogger("Trainer").setLevel(old_level)
+                model.to("cpu") # Free VRAM
+            except:
+                pass
+
+        # VALIDATION-FIRST LOGIC: Always prioritize val_acc over train_acc or zero-cost guesses
+        fitness = val_acc
 
         return {
             "fitness": fitness,
-            "accuracy_proxy": val_acc / 100.0, # Kept for UI compatibility (e.g. 0.95)
+            "accuracy_proxy": max(0, val_acc / 100.0), # Kept for UI compatibility (e.g. 0.95), clamp negative
             "train_loss": train_loss, # Used to detect overfitting
             "params": params,
             "latency_ms": latency,
@@ -282,9 +281,12 @@ class NASEngine:
                 eval_data = self._evaluate_fitness(model, config, device)
                 self.population.append(eval_data)
 
-        # Handle case where all models exceeded max_params (Fallback)
+        # Filter out crashed models
+        self.population = [p for p in self.population if p["fitness"] > -1]
+
+        # Handle case where all models exceeded max_params or crashed (Fallback)
         if not self.population:
-            logger.warning("No models fit within the max_params constraint. Using default fallback.")
+            logger.warning("All initial models failed or exceeded max params. Injecting failsafe fallback.")
             if self.metadata["type"] == "tabular":
                 config = self._sample_tabular_config()
             elif self.metadata["type"] == "image":
@@ -292,7 +294,8 @@ class NASEngine:
             else:
                 config = self._sample_sequence_config()
             model = self._build_model(config)
-            self.population.append(self._evaluate_fitness(model, config, device))
+            eval_data = self._evaluate_fitness(model, config, device)
+            self.population.append(eval_data)
 
         # Evolutionary Loop
         for gen in range(generations):
