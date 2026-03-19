@@ -284,18 +284,54 @@ class MainWindow(QMainWindow):
 
             # Monkey patch the nas evolutionary loop directly to get LIVE chart updates
             original_run_search = nas.run_search
+
+            # Helper to wrap the NAS fitness evaluation with a live UI callback
+            def evaluate_with_live_ui(model, config, device, candidate_idx=0, total_candidates=1):
+                conf_name = config.get('name', 'MLP Config')
+                self.signals.ai_msg.emit(f"Evaluating {candidate_idx}/{total_candidates}: {conf_name}...")
+                self.signals.log_msg.emit(f"Starting 2-epoch proxy training for candidate {candidate_idx}: {conf_name}")
+
+                # Monkey patch the internal trainer used by _evaluate_fitness just for this run to emit live signals
+                import micronas.engine.nas
+                import micronas.engine.trainer
+                original_trainer_train = micronas.engine.trainer.Trainer.train
+
+                def live_proxy_train(trainer_self, epochs=2, early_stopping_patience=10, callback=None):
+                    def proxy_cb(epoch, t_loss, v_loss, v_acc):
+                        self.signals.train_progress.emit(epoch, t_loss, v_loss, v_acc)
+                        self.signals.log_msg.emit(f"[NAS Search] {conf_name} - Epoch {epoch}/{epochs} | TL: {t_loss:.3f} | VL: {v_loss:.3f} | Acc: {v_acc:.2f}%")
+                    return original_trainer_train(trainer_self, epochs=epochs, early_stopping_patience=early_stopping_patience, callback=proxy_cb)
+
+                micronas.engine.trainer.Trainer.train = live_proxy_train
+                try:
+                    res = nas._evaluate_fitness(model, config, device)
+                finally:
+                    micronas.engine.trainer.Trainer.train = original_trainer_train
+
+                self.signals.ai_msg.emit(f"Candidate {candidate_idx} scored {res['fitness']:.2f}% accuracy.")
+                return res
+
             def live_run_search(population_size, generations, max_params=1e6):
                 # Similar to original loop but emitting signals live
                 logger = get_logger("NASEngine")
                 device = "cuda" if torch.cuda.is_available() else "cpu"
 
                 # Initialize
-                for _ in range(population_size):
+                self.signals.ai_msg.emit("Initializing Candidate Population...")
+                for idx in range(population_size):
                     config = nas._sample_mlp_config() if nas.metadata["type"] == "tabular" else nas._sample_cnn_config()
                     model = nas._build_model(config)
                     if model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(model) < max_params:
-                        eval_data = nas._evaluate_fitness(model, config, device)
+                        eval_data = evaluate_with_live_ui(model, config, device, candidate_idx=idx+1, total_candidates=population_size)
                         nas.population.append(eval_data)
+
+                # Handle case where all models exceeded max_params (Fallback)
+                if not nas.population:
+                    logger.warning("No models fit within the max_params constraint. Using default fallback.")
+                    config = nas._sample_mlp_config() if nas.metadata["type"] == "tabular" else nas._sample_cnn_config()
+                    model = nas._build_model(config)
+                    eval_data = evaluate_with_live_ui(model, config, device, candidate_idx=1, total_candidates=1)
+                    nas.population.append(eval_data)
 
                 # Evolution Loop
                 import random
@@ -306,6 +342,7 @@ class MainWindow(QMainWindow):
                     # LIVE EMIT here!
                     best_fitness_now = nas.population[0]["fitness"]
                     self.signals.nas_progress.emit(gen+1, best_fitness_now, nas.population)
+                    self.signals.ai_msg.emit(f"Generation {gen+1}/{generations} | Current Best Fitness: {best_fitness_now:.2f}%")
 
                     parents = nas.population[:population_size//2]
                     next_gen = parents.copy()
@@ -316,7 +353,7 @@ class MainWindow(QMainWindow):
                         if child_config in nas.failures: continue
                         child_model = nas._build_model(child_config)
                         if child_model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(child_model) < max_params:
-                            eval_data = nas._evaluate_fitness(child_model, child_config, device)
+                            eval_data = evaluate_with_live_ui(child_model, child_config, device, candidate_idx=len(next_gen)+1, total_candidates=population_size)
                             next_gen.append(eval_data)
                     nas.population = next_gen
 
