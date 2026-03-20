@@ -373,32 +373,6 @@ class MainWindow(QMainWindow):
 
                 nas.population = sorted(nas.population, key=lambda x: x["fitness"], reverse=True)
 
-                # Check for Ensemble Option (Advanced Bonus)
-                # If top 2 models are very close in validation accuracy, and both are PyTorch models, ensemble them.
-                if len(nas.population) >= 2:
-                    top1 = nas.population[0]
-                    top2 = nas.population[1]
-                    if abs(top1["fitness"] - top2["fitness"]) < 2.0:
-                        if top1["config"]["type"] not in ["rf", "xgb"] and top2["config"]["type"] not in ["rf", "xgb"]:
-                            logger.info("Top 2 models are competitive! Creating an Ensemble.")
-                            ensemble_cfg = {
-                                "type": "ensemble",
-                                "name": f"Ensemble: {top1['config']['name']} + {top2['config']['name']}",
-                                "sub_configs": [top1["config"], top2["config"]]
-                            }
-                            # Mock an eval to represent the ensemble
-                            ensemble_eval = {
-                                "fitness": max(top1["fitness"], top2["fitness"]) + 0.5, # Assumed minor boost
-                                "accuracy_proxy": max(top1["accuracy_proxy"], top2["accuracy_proxy"]),
-                                "train_loss": min(top1["train_loss"], top2["train_loss"]),
-                                "params": top1["params"] + top2["params"],
-                                "latency_ms": top1["latency_ms"] + top2["latency_ms"],
-                                "memory_mb": top1["memory_mb"] + top2["memory_mb"],
-                                "config": ensemble_cfg,
-                                "model": None # Will be built fresh
-                            }
-                            nas.population.insert(0, ensemble_eval)
-
                 best = nas.population[0]
                 nas.best_model = best["model"]
                 nas.best_config = best["config"]
@@ -455,7 +429,9 @@ class MainWindow(QMainWindow):
             history = trainer.train(epochs=final_epochs, callback=train_cb, early_stopping_patience=3)
 
             self.signals.ai_msg.emit("Exporting Project...")
-            exporter = ProjectExporter(best_model, metadata, history)
+
+            # CRITICAL: Pass the completely rebuilt and retrained model to the exporter, not the dead proxy model
+            exporter = ProjectExporter(fresh_model, metadata, history)
             exporter.export()
 
             completion_log = """
@@ -473,7 +449,9 @@ Output generated in 'project_output/':
 """
             self.signals.log_msg.emit(completion_log)
             self.signals.ai_msg.emit("Ready for Deployment.")
-            self.exported_model = best_model
+
+            # Expose the newly trained, non-proxy model to the UI Live Prediction module
+            self.exported_model = fresh_model
             self.exported_metadata = metadata
 
         except Exception as e:

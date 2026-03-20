@@ -4,7 +4,7 @@ import json
 import os
 import torch
 from utils.logger import get_logger
-from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, DynamicGRU, TemporalCNN, TreeModelWrapper, EnsembleWrapper, count_parameters, estimate_memory_mb
+from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, DynamicGRU, TemporalCNN, TreeModelWrapper, count_parameters, estimate_memory_mb
 from engine.prompt_parser import PromptParser
 
 logger = get_logger("NASEngine")
@@ -190,10 +190,6 @@ class NASEngine:
                     task=self.metadata["task"],
                     **model_params
                 )
-            elif config["type"] == "ensemble":
-                models = [self._build_model(sub_cfg) for sub_cfg in config["sub_configs"]]
-                model = EnsembleWrapper(models)
-                model.task = self.metadata["task"]
             return model
         except Exception as e:
             logger.error(f"Failed to build model from config {config}: {e}")

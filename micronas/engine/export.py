@@ -13,6 +13,9 @@ class ProjectExporter:
         self.output_dir = output_dir
 
     def export(self):
+        if self.model is None:
+            raise Exception("Model not trained properly or is NoneType.")
+
         logger.info(f"Exporting project to {self.output_dir}")
         os.makedirs(self.output_dir, exist_ok=True)
 

@@ -77,25 +77,6 @@ class TemporalCNN(nn.Module):
         x = self.pool(x).squeeze(-1)
         return self.fc(x)
 
-class EnsembleWrapper(nn.Module):
-    """Bonus feature: Evaluates multiple base models and averages their predictions."""
-    def __init__(self, models):
-        super(EnsembleWrapper, self).__init__()
-        # Ensure we only ensemble identical task types (e.g. PyTorch models together)
-        self.models = nn.ModuleList([m for m in models if isinstance(m, nn.Module)])
-        if self.models:
-            self.task = getattr(self.models[0], 'task', 'classification')
-        else:
-            self.task = 'classification'
-
-    def forward(self, x):
-        outputs = []
-        for model in self.models:
-            outputs.append(model(x))
-        # Average the predictions
-        stacked = torch.stack(outputs, dim=0)
-        return torch.mean(stacked, dim=0)
-
 class DynamicMLP(nn.Module):
     def __init__(self, input_size, hidden_layers, num_classes, task="classification", dropout_rate=0.2):
         super(DynamicMLP, self).__init__()

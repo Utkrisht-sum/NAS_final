@@ -96,7 +96,7 @@ class DatasetAnalyzer:
             raise e
 
     def _load_image_folder(self):
-        # Apply heavy data augmentation to combat overfitting
+        # Apply data augmentation to combat overfitting
         transform = transforms.Compose([
             transforms.Resize((32, 32)), # Resize for compatibility with deeper CIFAR-like CNN templates
             transforms.RandomHorizontalFlip(),
