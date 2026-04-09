@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from accelerate import Accelerator
-from tqdm import tqdm
 from utils.logger import get_logger
 from engine.models import TreeModelWrapper
 
@@ -18,8 +17,11 @@ class Trainer:
         self.is_tree = isinstance(model, TreeModelWrapper)
 
         if not self.is_tree:
+            # Import get_device locally to avoid circular import issues if any
+            from utils.hardware import get_device
             # HuggingFace Accelerate for easy GPU/CPU offloading and mixed precision
-            self.accelerator = Accelerator(mixed_precision="fp16" if torch.cuda.is_available() else "no")
+            device = get_device()
+            self.accelerator = Accelerator(mixed_precision="fp16" if device == "cuda" else "no")
             logger.info(f"Accelerator device: {self.accelerator.device}, mixed_precision: {self.accelerator.mixed_precision}")
 
             self.optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-4)
@@ -86,34 +88,63 @@ class Trainer:
                 self.model.train()
                 total_loss = 0.0
 
-                # Use fallback try-except for OOM catching per batch
-                for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+                # Implement retry loop for OOM handling
+                retry_attempts = 0
+                max_retries = 5
+
+                while retry_attempts < max_retries:
                     try:
-                        self.optimizer.zero_grad()
-                        outputs = self.model(inputs)
+                        batch_loss = 0.0
+                        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+                            self.optimizer.zero_grad()
+                            outputs = self.model(inputs)
 
-                        if self.task == "regression":
-                            targets = targets.view(-1, 1).float()
+                            if self.task == "regression":
+                                targets = targets.view(-1, 1).float()
 
-                        loss = self.criterion(outputs, targets)
-                        self.accelerator.backward(loss)
+                            loss = self.criterion(outputs, targets)
+                            self.accelerator.backward(loss)
 
-                        # Gradient clipping to prevent exploding loss
-                        self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+                            # Gradient clipping to prevent exploding loss
+                            self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
 
-                        self.optimizer.step()
+                            self.optimizer.step()
 
-                        total_loss += loss.item()
+                            batch_loss += loss.item()
+
+                        # If loop finishes without OOM, break retry loop
+                        total_loss = batch_loss
+                        break
 
                     except RuntimeError as e:
                         if "out of memory" in str(e).lower():
-                            logger.warning(f"OOM caught in batch {batch_idx}! Attempting to clear cache and skip batch.")
+                            retry_attempts += 1
+                            logger.warning(f"OOM caught during epoch {epoch+1}! Retrying with half batch size (Attempt {retry_attempts}/{max_retries}).")
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
-                            # Dynamic batch sizing or skipping
-                            continue
+
+                            # Halve the batch size
+                            old_batch_size = self.train_loader.batch_size
+                            new_batch_size = max(1, old_batch_size // 2)
+
+                            if new_batch_size == old_batch_size:
+                                logger.error("Batch size is already 1, cannot reduce further. Aborting.")
+                                raise e
+
+                            # Recreate train loader
+                            self.train_loader = torch.utils.data.DataLoader(
+                                self.train_loader.dataset,
+                                batch_size=new_batch_size,
+                                shuffle=True
+                            )
+                            # Re-prepare with accelerator
+                            self.train_loader = self.accelerator.prepare(self.train_loader)
                         else:
                             raise e
+
+                if retry_attempts >= max_retries:
+                    logger.error("Max OOM retries exceeded.")
+                    break
 
                 avg_train_loss = total_loss / max(1, len(self.train_loader))
                 self.history["train_loss"].append(avg_train_loss)

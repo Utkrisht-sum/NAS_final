@@ -14,6 +14,8 @@ Designed for maximum stability and generalization, MICRONAS actively monitors th
 
 ## 🎯 Core Features
 
+- **💻 Hardware-Aware Adaptive NAS**: The system auto-detects CPU cores, RAM, and GPU capacity to deterministically scale epochs, population size, generations, and batch sizes to ensure optimal utilization without crashing.
+- **🛡️ Secure and Robust**: Integrates explicit OOM dynamic retries to prevent memory crashes, robust parameter validation, and secure dependency loading (`weights_only=True`).
 - **🧠 Dataset-Adaptive Multi-Model Selection**: The system natively evaluates and cross-compares entirely different model families:
   - *Tabular*: MLPs, Random Forests, XGBoost.
   - *Images*: Small, Medium, and Deep Convolutional Blocks.
@@ -28,7 +30,7 @@ Designed for maximum stability and generalization, MICRONAS actively monitors th
 
 ---
 
-## ⚙️ Installation
+## ⚙️ Installation (Conda Recommended)
 
 1. **Clone the repository:**
    ```bash
@@ -36,13 +38,14 @@ Designed for maximum stability and generalization, MICRONAS actively monitors th
    cd micronas-engine
    ```
 
-2. **Set up a virtual environment (Recommended):**
+2. **Create the Conda environment:**
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows use: venv\Scripts\activate
+   conda env create -f environment.yml
+   conda activate nas_project
    ```
 
-3. **Install dependencies:**
+3. **Install via pip (Alternative):**
+   If you do not have Conda, you can use pip:
    ```bash
    pip install -r micronas/requirements.txt
    ```
@@ -50,6 +53,33 @@ Designed for maximum stability and generalization, MICRONAS actively monitors th
 ---
 
 ## 🚀 How to Run
+
+Launch the MICRONAS Engine GUI:
+
+```bash
+python micronas/main.py
+```
+*(Ensure `micronas` is in your `PYTHONPATH` if running from outside the directory: `PYTHONPATH=. python micronas/main.py`)*
+
+### Running Tests
+
+We strictly use Pytest for reliable, comprehensive test coverage.
+To run the full test suite encompassing hardware scaling heuristics, parser validations, safety mechanisms, and logging guarantees, execute:
+
+```bash
+PYTHONPATH=micronas pytest tests/
+```
+
+---
+
+## 🛡️ Security Considerations
+
+MICRONAS is hardened for production use:
+- **Input Security**: Malformed natural language queries are safely clamped to heuristic boundaries without runtime evaluation.
+- **Model Security**: Deserialization of architectures employs strict PyTorch security rules (`weights_only=True`) to prevent code execution vulnerabilities.
+- **Resource Exhaustion Prevention**: Deterministic scaling ensures resources are strictly bounded by actual hardware ceilings, avoiding unbounded loops.
+
+---
 
 Launch the MICRONAS Engine GUI:
 

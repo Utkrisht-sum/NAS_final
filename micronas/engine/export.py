@@ -180,7 +180,7 @@ def load_model():
     # but we will default to 2 for hackathon MVP or read from state dict.
 
     # We load state dict directly and infer classes from classifier weight
-    state_dict = torch.load('model.pt', map_location='cpu')
+    state_dict = torch.load('model.pt', map_location='cpu', weights_only=True)
     num_classes = state_dict['classifier.weight'].shape[0]
 
     print("Reconstructing architecture...")

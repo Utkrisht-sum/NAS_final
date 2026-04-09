@@ -1,0 +1,17 @@
+name: nas_project
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - psutil
+  - pytest
+  - numpy
+  - pip:
+      - torch
+      - PySide6
+      - scikit-learn
+      - xgboost
+      - accelerate
+      - pillow
