@@ -4,7 +4,8 @@ import torch
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QTextEdit,
-    QSplitter, QProgressBar, QGroupBox, QFormLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView
+    QSplitter, QGroupBox, QFormLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+    QCheckBox
 )
 from PySide6.QtCore import Qt, Signal, QObject
 
@@ -14,6 +15,10 @@ from engine.nas import NASEngine
 from engine.trainer import Trainer
 from engine.export import ProjectExporter
 from utils.logger import get_logger
+from utils.hardware import get_system_info, get_adaptive_nas_config
+from utils.device import get_device
+from engine.models import count_parameters
+from utils.airllm_adapter import generate_explanation
 
 logger = get_logger("GUI")
 
@@ -65,21 +70,31 @@ class MainWindow(QMainWindow):
         mid_group = QGroupBox("2. NAS Configuration")
         mid_layout = QHBoxLayout()
 
+        self.auto_mode_cb = QCheckBox("Auto Optimize")
+        self.auto_mode_cb.setChecked(True)
+        self.auto_mode_cb.toggled.connect(self.toggle_auto_mode)
+
         self.pop_spin = QSpinBox()
-        self.pop_spin.setRange(2, 50)
+        self.pop_spin.setRange(2, 200)
         self.pop_spin.setValue(5)
 
         self.gen_spin = QSpinBox()
-        self.gen_spin.setRange(1, 20)
+        self.gen_spin.setRange(1, 100)
         self.gen_spin.setValue(2)
 
         self.epoch_spin = QSpinBox()
-        self.epoch_spin.setRange(1, 100)
+        self.epoch_spin.setRange(1, 1000)
         self.epoch_spin.setValue(2)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Fast Mode", "Balanced Mode", "Research Mode"])
 
+        # Initial disable state
+        self.pop_spin.setEnabled(False)
+        self.gen_spin.setEnabled(False)
+        self.epoch_spin.setEnabled(False)
+
+        mid_layout.addWidget(self.auto_mode_cb)
         mid_layout.addWidget(QLabel("Population:"))
         mid_layout.addWidget(self.pop_spin)
         mid_layout.addWidget(QLabel("Generations:"))
@@ -130,6 +145,11 @@ class MainWindow(QMainWindow):
         bottom_controls.addWidget(pred_group)
 
         main_layout.addLayout(bottom_controls)
+
+    def toggle_auto_mode(self, checked):
+        self.pop_spin.setEnabled(not checked)
+        self.gen_spin.setEnabled(not checked)
+        self.epoch_spin.setEnabled(not checked)
 
         # BOTTOM PANEL: Run & Progress
         self.btn_start = QPushButton("🚀 START MICRONAS ENGINE")
@@ -244,9 +264,19 @@ class MainWindow(QMainWindow):
 
         dataset = self.dataset_input.currentText()
         prompt = self.prompt_input.text()
-        pop = self.pop_spin.value()
-        gens = self.gen_spin.value()
-        epochs = self.epoch_spin.value()
+
+        if self.auto_mode_cb.isChecked():
+            sys_info = get_system_info()
+            adaptive_config = get_adaptive_nas_config(sys_info)
+            pop = adaptive_config["population"]
+            gens = adaptive_config["generations"]
+            epochs = adaptive_config["epochs"]
+            self.append_log(f"Auto Optimize: Enabled | Hardware Score: {adaptive_config['hardware_score']:.2f}")
+            self.append_log(f"Scaled Config -> Pop: {pop}, Gens: {gens}, Epochs: {epochs}, Batch Size: {adaptive_config['batch_size']}")
+        else:
+            pop = self.pop_spin.value()
+            gens = self.gen_spin.value()
+            epochs = self.epoch_spin.value()
 
         # Need a mock CSV for demo if chosen
         if dataset == "mock.csv":
@@ -313,7 +343,7 @@ class MainWindow(QMainWindow):
             def live_run_search(population_size, generations, max_params=1e6):
                 # Similar to original loop but emitting signals live
                 logger = get_logger("NASEngine")
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                device = get_device()
 
                 # Initialize
                 self.signals.ai_msg.emit("Initializing Candidate Population...")
@@ -326,7 +356,7 @@ class MainWindow(QMainWindow):
                         config = nas._sample_sequence_config()
 
                     model = nas._build_model(config)
-                    if model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(model) < max_params:
+                    if model and count_parameters(model) < max_params:
                         eval_data = evaluate_with_live_ui(model, config, device, candidate_idx=idx+1, total_candidates=population_size)
                         nas.population.append(eval_data)
 
@@ -366,7 +396,7 @@ class MainWindow(QMainWindow):
                         child_config = nas._mutate(parent["config"], parent_stats=parent)
                         if child_config in nas.failures: continue
                         child_model = nas._build_model(child_config)
-                        if child_model and getattr(nas, 'count_parameters', lambda m: sum(p.numel() for p in m.parameters()))(child_model) < max_params:
+                        if child_model and count_parameters(child_model) < max_params:
                             eval_data = evaluate_with_live_ui(child_model, child_config, device, candidate_idx=len(next_gen)+1, total_candidates=population_size)
                             next_gen.append(eval_data)
                     nas.population = next_gen
@@ -394,12 +424,18 @@ class MainWindow(QMainWindow):
 
             # Emit explainability reasoning before training
             best_stats = final_pop[0]
+
+            # Use AirLLM to generate explanation (will fallback cleanly if unavailable)
+            llm_insight = generate_explanation(get_system_info())
+
             explain_text = f"""## 🧠 MICRONAS Decision Engine
 
 **Why this model was selected:**
 - **Proxy Accuracy**: Highest correlation to perfect score ({best_stats['accuracy_proxy']*100:.2f}%) under constraints.
 - **Compute Efficiency**: Achieves this accuracy with only {best_stats['params'] / 1000:.1f}K parameters.
 - **Hardware Profile**: Perfect memory fit ({best_stats['memory_mb']:.2f}MB vs VRAM limit).
+
+{llm_insight}
 
 *Executing Full Training to verify architecture...*"""
             self.signals.explainability_msg.emit(explain_text)

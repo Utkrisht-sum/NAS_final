@@ -4,6 +4,7 @@ import json
 import os
 import torch
 from utils.logger import get_logger
+from utils.device import get_device
 from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, DynamicGRU, TemporalCNN, TreeModelWrapper, count_parameters, estimate_memory_mb
 from engine.prompt_parser import PromptParser
 
@@ -231,6 +232,34 @@ class NASEngine:
             # Track train_acc to detect over/under fitting
             train_loss = history['train_loss'][-1] if len(history['train_loss']) > 0 else float('inf')
 
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                logger.warning(f"OOM during proxy training for {config.get('name', 'Model')}. Retrying with half batch size.")
+                try:
+                    if hasattr(torch.cuda, 'empty_cache'):
+                        torch.cuda.empty_cache()
+
+                    # Halve the batch size of the dataloader for this retry
+                    old_batch_size = self.train_loader.batch_size
+                    new_batch_size = max(1, old_batch_size // 2)
+
+                    # Create new dataloaders for the retry
+                    retry_train_loader = torch.utils.data.DataLoader(self.train_loader.dataset, batch_size=new_batch_size, shuffle=True)
+                    retry_val_loader = torch.utils.data.DataLoader(self.val_loader.dataset, batch_size=new_batch_size, shuffle=False)
+
+                    trainer = Trainer(model, retry_train_loader, retry_val_loader, task=self.metadata["task"])
+                    history = trainer.train(epochs=proxy_epochs, early_stopping_patience=2)
+                    val_acc = history['val_acc'][-1] if len(history['val_acc']) > 0 else 0.0
+                    train_loss = history['train_loss'][-1] if len(history['train_loss']) > 0 else float('inf')
+                    logger.info("OOM recovery successful.")
+                except Exception as retry_e:
+                    logger.warning(f"Retry failed for {config.get('name', 'Model')}: {retry_e}")
+                    val_acc = -1.0
+                    train_loss = float('inf')
+            else:
+                logger.warning(f"Training evaluation failed for {config.get('name', 'Model')}: {e}")
+                val_acc = -1.0
+                train_loss = float('inf')
         except Exception as e:
             logger.warning(f"Training evaluation failed for {config.get('name', 'Model')}: {e}")
             val_acc = -1.0 # Guarantee rejection by Evolutionary Sort
@@ -259,7 +288,7 @@ class NASEngine:
     def run_search(self, population_size=10, generations=3, max_params=1e6):
         logger.info(f"Starting NAS | Pop: {population_size}, Gens: {generations}")
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = get_device()
         logger.info(f"Running NAS on {device}")
 
         # Initialize Population

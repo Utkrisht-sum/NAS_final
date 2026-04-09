@@ -26,6 +26,14 @@ class PromptParser:
             "max_params_multiplier": 1.0
         }
 
+        if not isinstance(prompt_text, str):
+            logger.warning("Prompt is not a string. Ignoring prompt parsing.")
+            return weights
+
+        # Sanitize prompt
+        import re
+        prompt_text = re.sub(r'[^a-zA-Z0-9\s.,!?_-]', '', str(prompt_text))
+
         prompt_lower = prompt_text.lower()
 
         # Apply heuristics based on keywords
