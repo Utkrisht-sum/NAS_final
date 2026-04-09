@@ -18,7 +18,7 @@ class Trainer:
 
         if not self.is_tree:
             # Import get_device locally to avoid circular import issues if any
-            from utils.hardware import get_device
+            from utils.device import get_device
             # HuggingFace Accelerate for easy GPU/CPU offloading and mixed precision
             device = get_device()
             self.accelerator = Accelerator(mixed_precision="fp16" if device == "cuda" else "no")

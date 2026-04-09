@@ -15,8 +15,10 @@ from engine.nas import NASEngine
 from engine.trainer import Trainer
 from engine.export import ProjectExporter
 from utils.logger import get_logger
-from utils.hardware import get_system_info, get_adaptive_nas_config, get_device
+from utils.hardware import get_system_info, get_adaptive_nas_config
+from utils.device import get_device
 from engine.models import count_parameters
+from utils.airllm_adapter import generate_explanation
 
 logger = get_logger("GUI")
 
@@ -68,7 +70,7 @@ class MainWindow(QMainWindow):
         mid_group = QGroupBox("2. NAS Configuration")
         mid_layout = QHBoxLayout()
 
-        self.auto_mode_cb = QCheckBox("Auto Mode")
+        self.auto_mode_cb = QCheckBox("Auto Optimize")
         self.auto_mode_cb.setChecked(True)
         self.auto_mode_cb.toggled.connect(self.toggle_auto_mode)
 
@@ -269,7 +271,7 @@ class MainWindow(QMainWindow):
             pop = adaptive_config["population"]
             gens = adaptive_config["generations"]
             epochs = adaptive_config["epochs"]
-            self.append_log(f"Auto Mode: Enabled | Hardware Score: {adaptive_config['hardware_score']:.2f}")
+            self.append_log(f"Auto Optimize: Enabled | Hardware Score: {adaptive_config['hardware_score']:.2f}")
             self.append_log(f"Scaled Config -> Pop: {pop}, Gens: {gens}, Epochs: {epochs}, Batch Size: {adaptive_config['batch_size']}")
         else:
             pop = self.pop_spin.value()
@@ -422,12 +424,18 @@ class MainWindow(QMainWindow):
 
             # Emit explainability reasoning before training
             best_stats = final_pop[0]
+
+            # Use AirLLM to generate explanation (will fallback cleanly if unavailable)
+            llm_insight = generate_explanation(get_system_info())
+
             explain_text = f"""## 🧠 MICRONAS Decision Engine
 
 **Why this model was selected:**
 - **Proxy Accuracy**: Highest correlation to perfect score ({best_stats['accuracy_proxy']*100:.2f}%) under constraints.
 - **Compute Efficiency**: Achieves this accuracy with only {best_stats['params'] / 1000:.1f}K parameters.
 - **Hardware Profile**: Perfect memory fit ({best_stats['memory_mb']:.2f}MB vs VRAM limit).
+
+{llm_insight}
 
 *Executing Full Training to verify architecture...*"""
             self.signals.explainability_msg.emit(explain_text)

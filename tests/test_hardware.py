@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../m
 # Mock psutil
 sys.modules['psutil'] = mock.MagicMock()
 
-from utils.hardware import get_system_info, get_device, get_adaptive_nas_config, scale_value
+from utils.hardware import get_system_info, get_adaptive_nas_config, scale_value
 
 def test_scale_value():
     assert scale_value(0.0, 10, 20) == 10
@@ -21,23 +21,6 @@ def test_get_system_info():
     assert "ram_gb" in info
     assert "gpu_available" in info
     assert "gpu_memory_gb" in info
-
-def test_get_device_no_torch():
-    # Mock missing torch
-    with mock.patch.dict(sys.modules, {'torch': None}):
-        assert get_device() == "cpu"
-
-def test_get_device_with_torch_no_cuda():
-    mock_torch = mock.MagicMock()
-    mock_torch.cuda.is_available.return_value = False
-    with mock.patch.dict(sys.modules, {'torch': mock_torch}):
-        assert get_device() == "cpu"
-
-def test_get_device_with_cuda():
-    mock_torch = mock.MagicMock()
-    mock_torch.cuda.is_available.return_value = True
-    with mock.patch.dict(sys.modules, {'torch': mock_torch}):
-        assert get_device() == "cuda"
 
 def test_adaptive_config_low_end_cpu():
     sys_info = {

@@ -4,7 +4,7 @@ import json
 import os
 import torch
 from utils.logger import get_logger
-from utils.hardware import get_device
+from utils.device import get_device
 from engine.models import DynamicMLP, DynamicCNN, DynamicLSTM, DynamicGRU, TemporalCNN, TreeModelWrapper, count_parameters, estimate_memory_mb
 from engine.prompt_parser import PromptParser
 

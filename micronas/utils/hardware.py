@@ -24,16 +24,6 @@ def get_system_info():
 
     return info
 
-def get_device():
-    """Safely determines the best available device."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return "cuda"
-    except ImportError:
-        pass
-    return "cpu"
-
 def clamp(value, min_val, max_val):
     return max(min_val, min(max_val, value))
 
