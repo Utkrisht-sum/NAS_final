@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 from accelerate import Accelerator
 from tqdm import tqdm
 from utils.logger import get_logger
@@ -155,7 +156,6 @@ class Trainer:
         for x, y in loader:
             X_all.append(x.numpy())
             y_all.append(y.numpy())
-        import numpy as np
         return np.vstack(X_all), np.concatenate(y_all)
 
     def evaluate(self):
@@ -177,7 +177,6 @@ class Trainer:
                 else:
                     probs = None
 
-                import numpy as np
                 correct_top1 = np.sum(preds == self.y_val)
                 total = len(self.y_val)
                 all_preds.extend(preds)
@@ -187,7 +186,6 @@ class Trainer:
                 total_loss = float(total - correct_top1)
             else:
                 preds = self.model.model.predict(self.X_val)
-                import numpy as np
                 mse = np.mean((preds - self.y_val)**2)
                 total_loss = mse * len(self.y_val)
 

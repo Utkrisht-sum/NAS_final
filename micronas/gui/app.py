@@ -1,6 +1,9 @@
 import sys
 import threading
+import os
 import torch
+import numpy as np
+import pandas as pd
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QTextEdit,
@@ -250,9 +253,6 @@ class MainWindow(QMainWindow):
 
         # Need a mock CSV for demo if chosen
         if dataset == "mock.csv":
-            import pandas as pd
-            import numpy as np
-            import os
             if not os.path.exists("mock.csv"):
                 df = pd.DataFrame(np.random.rand(100, 5), columns=['f1', 'f2', 'f3', 'f4', 'target'])
                 df['target'] = np.random.choice([0, 1], 100)
