@@ -77,6 +77,10 @@ class MainWindow(QMainWindow):
         self.epoch_spin.setRange(1, 100)
         self.epoch_spin.setValue(2)
 
+        self.max_epoch_spin = QSpinBox()
+        self.max_epoch_spin.setRange(1, 100)
+        self.max_epoch_spin.setValue(20)
+
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Fast Mode", "Balanced Mode", "Research Mode"])
 
@@ -86,6 +90,8 @@ class MainWindow(QMainWindow):
         mid_layout.addWidget(self.gen_spin)
         mid_layout.addWidget(QLabel("Epochs:"))
         mid_layout.addWidget(self.epoch_spin)
+        mid_layout.addWidget(QLabel("Max Final Epochs:"))
+        mid_layout.addWidget(self.max_epoch_spin)
         mid_layout.addWidget(QLabel("Mode:"))
         mid_layout.addWidget(self.mode_combo)
 
@@ -247,6 +253,7 @@ class MainWindow(QMainWindow):
         pop = self.pop_spin.value()
         gens = self.gen_spin.value()
         epochs = self.epoch_spin.value()
+        max_final_epochs = self.max_epoch_spin.value()
 
         # Need a mock CSV for demo if chosen
         if dataset == "mock.csv":
@@ -258,9 +265,9 @@ class MainWindow(QMainWindow):
                 df['target'] = np.random.choice([0, 1], 100)
                 df.to_csv("mock.csv", index=False)
 
-        threading.Thread(target=self.run_pipeline_thread, args=(dataset, prompt, pop, gens, epochs), daemon=True).start()
+        threading.Thread(target=self.run_pipeline_thread, args=(dataset, prompt, pop, gens, epochs, max_final_epochs), daemon=True).start()
 
-    def run_pipeline_thread(self, dataset, prompt, pop, gens, epochs):
+    def run_pipeline_thread(self, dataset, prompt, pop, gens, epochs, max_final_epochs):
         try:
             self.signals.ai_msg.emit("Analyzing Dataset...")
             self.signals.log_msg.emit(f"Loading dataset: {dataset}")
@@ -407,12 +414,12 @@ class MainWindow(QMainWindow):
             self.signals.ai_msg.emit("Starting Full Training Phase (Stage 2)...")
             self.signals.log_msg.emit("Initializing Trainer")
 
-            # Enforce 15-20 minimum final epochs for Image data and high accuracy
-            final_epochs = epochs * nas.weights.get("epoch_multiplier", 1)
-            if final_epochs < 15:
-                final_epochs = 15
-            elif final_epochs > 20 and metadata["type"] == "image":
-                final_epochs = 20 # Cap to prevent extremely long hackathon demo wait times
+            # Enforce 15-max_final_epochs minimum final epochs for stability and high accuracy
+            final_epochs = calculate_final_epochs(
+                epochs,
+                nas.weights.get("epoch_multiplier", 1),
+                max_final_epochs
+            )
 
             self.signals.log_msg.emit(f"Calculated Final Epochs: {final_epochs} (due to prompt requirements)")
 
@@ -538,6 +545,19 @@ Output generated in 'project_output/':
                     self.pred_label.setText(f"Class: {pred.item()} | Confidence: {conf.item()*100:.1f}%")
             except Exception as e:
                 self.pred_label.setText(f"Predict Error: {e}")
+
+def calculate_final_epochs(base_epochs, epoch_multiplier, max_final_epochs):
+    """
+    Calculates final training epochs based on base epochs,
+    prompt-derived multiplier, and a user-defined maximum cap.
+    """
+    final_epochs = base_epochs * epoch_multiplier
+    if final_epochs < 15:
+        final_epochs = 15
+
+    if final_epochs > max_final_epochs:
+        final_epochs = max_final_epochs # Configurable cap to prevent extremely long wait times
+    return final_epochs
 
 def run_app():
     app = QApplication(sys.argv)
